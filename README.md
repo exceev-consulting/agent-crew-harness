@@ -54,7 +54,7 @@ flowchart LR
 | bug-hunter | weekly | Reviews one area of the code per week, files proven bugs |
 | bug-fixer | twice a week | Fixes one bug a maintainer or the harness filed (off by default) |
 | market-research | weekly | Watches users, upstreams and competitors, opens up to 2 proposals |
-| feature-planner | twice a week | The product owner: specifies ideas you label `needs-spec` (user story, acceptance criteria, sub-issues) and proposes missing features weekly. Never code |
+| feature-planner | twice a week | The product owner: specifies market-research proposals and ideas you label `needs-spec` (user story, acceptance criteria, sub-issues), and proposes missing features weekly. Never code |
 | sentinel | every 30 min | Telegram and desktop alerts: critical issues, advisories, "do not merge", red default branch, failing routines |
 | hotfix-developer | every 30 min | Develops a `priority: critical` issue at once, once you add `agent-ready` |
 | hotfix-review | hourly | Reviews critical pull requests at once |

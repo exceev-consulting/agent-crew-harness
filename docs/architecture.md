@@ -31,8 +31,8 @@
 flowchart TB
   triage[issue-triage] -->|triaged, priority, size, milestone| dev[issue-developer]
   hunter[bug-hunter] -->|bug + triaged + claude| fixer[bug-fixer]
-  research[market-research] -->|proposal| you{maintainer}
-  you -->|needs-spec| planner[feature-planner]
+  research[market-research] -->|proposal| planner[feature-planner]
+  you{maintainer} -->|needs-spec| planner
   planner -->|spec, sub-issues, proposals| you
   you -->|agent-ready / ready| dev
   you -->|agent-ready on priority: critical| hotdev[hotfix-developer]

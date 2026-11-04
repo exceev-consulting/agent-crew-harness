@@ -45,10 +45,12 @@ Steps
    (`gh issue list -R {{repo}} --state open --label proposal --limit 100 --json number --jq length`), open none: add
    the new evidence as a comment on the most relevant open one instead
    (`$R/bin/bot-gh issue comment <n> -R {{repo}} --body-file <file>`, first line `<!-- market-research-routine -->`).
-   Body sections: Problem and who needs it; Evidence (links); Proposed behaviour (what changes for the user, new
-   settings, default on or off, risk to users); Implementation sketch (the files and places a change of this kind
-   must touch, per PROFILE.md, Conventions); Effort and risk; Open questions. Last lines: "To approve, add the `ready`
-   or `agent-ready` label: the issue-developer routine will then open a pull request." then the footer.
+   The body starts with the line `<!-- market-research-routine proposal -->`. Body sections: Problem and who needs it;
+   Evidence (links); Proposed behaviour (what changes for the user, new settings, default on or off, risk to users);
+   Implementation sketch (the files and places a change of this kind must touch, per PROFILE.md, Conventions); Effort
+   and risk; Open questions. Last lines: "Next: the feature-planner routine writes the full specification at its next
+   run. To build it, a maintainer removes `proposal` and adds `agent-ready`: the issue-developer routine then opens a
+   pull request." then the footer.
 5. Final summary: short research notes with links, ideas shortlisted but not filed and why, issues opened or commented.
 
 <!-- harness-routine market-research v1.0.0 -->
