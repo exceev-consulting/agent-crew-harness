@@ -1,8 +1,18 @@
 {
-  "name": "agent-harness",
+  "name": "agent-crew-harness",
   "version": "0.1.0",
-  "description": "Install and run Claude Code routines that maintain a GitHub repository with you: triage, development of approved issues, reviews, fixes, CI diagnosis, security watch and a hotfix lane. Skills: harness-install, harness-profile, harness-doctor.",
-  "author": {"name": "Exceev Consulting"},
+  "description": "A crew of Claude Code agents that runs a GitHub repository like a full tech and business team, under your control: triage, development of approved issues, reviews, fixes, CI diagnosis, security watch and a hotfix lane. Skills: harness-install, harness-profile, harness-doctor.",
+  "author": {
+    "name": "Exceev Consulting"
+  },
   "license": "MIT",
-  "keywords": ["routines", "scheduled-tasks", "github", "maintainer", "code-review", "security", "automation"]
+  "keywords": [
+    "routines",
+    "scheduled-tasks",
+    "github",
+    "maintainer",
+    "code-review",
+    "security",
+    "automation"
+  ]
 }

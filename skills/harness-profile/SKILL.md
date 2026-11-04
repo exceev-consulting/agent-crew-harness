@@ -7,7 +7,7 @@ description: Draft or review the PROFILE.md of a repository for the agent harnes
 
 PROFILE.md tells every routine what is specific to one project. Its sections and their purpose are in `docs/profile.md`
 of the harness repository (two levels above this skill). The section titles are fixed: routines refer to them by name.
-`profiles/server-prep/PROFILE.md` and `profiles/agent-harness/PROFILE.md` are complete examples.
+`profiles/server-prep/PROFILE.md` and `profiles/agent-crew-harness/PROFILE.md` are complete examples.
 
 1. Read, from the target repository's default branch: README, CLAUDE.md or AGENTS.md, CONTRIBUTING.md, SECURITY.md,
    the pull request template, `.github/workflows/*`, the issue templates, the label list (`gh label list`), the

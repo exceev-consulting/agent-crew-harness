@@ -36,7 +36,7 @@ install it, enable the affected feature, run on the affected platform) and what 
 
 Complete examples: [`profiles/server-prep/security-watch.json`](../profiles/server-prep/security-watch.json) (a server
 tool: panels, Docker, CrowdSec, 27 distro packages) and
-[`profiles/agent-harness/security-watch.json`](../profiles/agent-harness/security-watch.json).
+[`profiles/agent-crew-harness/security-watch.json`](../profiles/agent-crew-harness/security-watch.json).
 
 ## The routine
 

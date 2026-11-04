@@ -16,5 +16,5 @@
   "release_app": "my-project-release",
   "canary": "MY-PROJECT-CANARY-0000",
   "app_process": "claude-desktop",
-  "harness_repo": "/home/me/src/agent-harness"
+  "harness_repo": "/home/me/src/agent-crew-harness"
 }

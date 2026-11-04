@@ -4,7 +4,7 @@ This profile lets the harness maintain its own repository with its own routines.
 
 ## Project
 
-agent-harness is a set of Claude Code scheduled routines that maintain a GitHub repository (triage, develop agent-ready
+agent-crew-harness is a set of Claude Code scheduled routines that maintain a GitHub repository (triage, develop agent-ready
 issues, review pull requests, fix review comments, resolve conflicts, watch security, hotfix lane), with the Bash and
 Python helpers they share (`bin/`, `lib/`), their tests (`tests/`), the shared rules (`core/RULES.md`), the routine
 templates (`routines/<name>/SKILL.md` + `routine.json`), the ultracode workflow (`workflows/`), project profiles

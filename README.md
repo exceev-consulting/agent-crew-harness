@@ -1,6 +1,7 @@
-# agent-harness
+# agent-crew-harness
 
-Claude Code routines that maintain a GitHub repository with you: they triage issues, develop the ones you approve,
+A crew of Claude Code agents that runs your repository like a full tech and business team, in a harness that keeps you
+in control. The routines maintain a GitHub repository with you: they triage issues, develop the ones you approve,
 review every pull request, answer review comments, resolve conflicts, diagnose CI failures, watch new CVEs in what your
 project depends on, and run a hotfix lane for blocking bugs. You stay in control: nothing is written without your label,
 nothing is merged or released without you.
@@ -70,13 +71,13 @@ Requirements: Linux with systemd, the Claude Code desktop app (scheduled tasks),
 `curl`, `python3`, `openssl`, `node`.
 
 ```bash
-git clone https://github.com/<owner>/agent-harness.git ~/src/agent-harness
+git clone https://github.com/<owner>/agent-crew-harness.git ~/src/agent-crew-harness
 ```
 
 Or install only the skills as a Claude Code plugin (Claude Code 2.1.275 or later):
 
 ```text
-/plugin install agent-harness --marketplace <owner>/agent-harness
+/plugin install agent-crew-harness --marketplace <owner>/agent-crew-harness
 ```
 
 Open Claude Code in that folder, in a session with Bypass permissions (scheduled tasks keep the mode of the session that
@@ -96,7 +97,7 @@ To update later: `git pull`, then ask Claude Code to update the harness. It show
 - [Architecture](docs/architecture.md): how routines, rules, profile, helpers and state fit together.
 - [Security model](docs/security-model.md): what an agent can and cannot do, and why.
 - [Profile](docs/profile.md): the sections of `PROFILE.md`. Examples: [server-prep](profiles/server-prep/PROFILE.md),
-  [this repository](profiles/agent-harness/PROFILE.md).
+  [this repository](profiles/agent-crew-harness/PROFILE.md).
 - [Hotfix lane](docs/hotfix-lane.md), [Security watch](docs/security-watch.md), [Telegram](docs/telegram.md),
   [Labels](docs/labels.md), [Writing a routine](docs/routine-format.md), [Maintaining this repository with itself](docs/self-hosting.md).
 

@@ -1,4 +1,4 @@
-# agent-harness: context for Claude
+# agent-crew-harness: context for Claude
 
 This repository is the agent harness: Claude Code scheduled routines that maintain a GitHub repository, with their
 helpers and installer. Read README.md, then docs/architecture.md and docs/security-model.md.
@@ -6,7 +6,7 @@ helpers and installer. Read README.md, then docs/architecture.md and docs/securi
 - `core/RULES.md`: ground rules of every routine (rendered at install). Changing it changes what agents may do: label
   the pull request `security`.
 - `routines/<name>/SKILL.md` + `routine.json`: one routine each, generic, versioned. Format: docs/routine-format.md.
-- `profiles/<name>/PROFILE.md`: project facts. Spec: docs/profile.md. `profiles/agent-harness/` describes this repository
+- `profiles/<name>/PROFILE.md`: project facts. Spec: docs/profile.md. `profiles/agent-crew-harness/` describes this repository
   for its own routines.
 - `bin/`, `lib/`: helpers. Settings only through `lib/harness.sh` (`hconf`) / `lib/harness.py`. Test overrides are
   `HARNESS_*` variables honoured only with `HARNESS_TEST=1`.

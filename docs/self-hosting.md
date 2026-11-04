@@ -1,13 +1,13 @@
 # Maintaining this repository with itself
 
 The harness is maintained by its own routines, installed for this repository with
-[`profiles/agent-harness/PROFILE.md`](../profiles/agent-harness/PROFILE.md). It is the first and strictest test of every
+[`profiles/agent-crew-harness/PROFILE.md`](../profiles/agent-crew-harness/PROFILE.md). It is the first and strictest test of every
 change: a routine that would misbehave on your project misbehaves here first.
 
 ## Setup
 
 Same as any project: ask the `harness-install` skill to install the harness for this repository and choose the
-`agent-harness` profile. Use a separate `task_prefix` (for example `agent-harness-`) and `harness_dir` when the same
+`agent-crew-harness` profile. Use a separate `task_prefix` (for example `agent-crew-harness-`) and `harness_dir` when the same
 machine also runs the harness for another project.
 
 ## The one trap

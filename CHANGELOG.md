@@ -12,4 +12,4 @@ Each routine has its own version (`routine.json`); a routine change names the ro
 - Helpers with tests: `bot-gh` / `review-gh` (GitHub App identities), `scan-private` (private-data guard), `notify`
   (Telegram, quiet hours), `sentinel-scan`, `security-watch` (GitHub advisories, OSV, NVD, CISA KEV, pins),
   `harness-watchdog` (systemd, outside Claude), `harness-render` (templates, versions), `harness-doctor`, `app-manifest`.
-- Skills: `harness-install`, `harness-profile`, `harness-doctor`. Profiles: blank, server-prep, agent-harness (itself).
+- Skills: `harness-install`, `harness-profile`, `harness-doctor`. Profiles: blank, server-prep, agent-crew-harness (itself).
