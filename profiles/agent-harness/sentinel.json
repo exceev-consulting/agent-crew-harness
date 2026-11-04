@@ -1,0 +1,44 @@
+{
+  "main_branch": "main",
+  "critical_label": "priority: critical",
+  "go_labels": [
+    "agent-ready",
+    "ready"
+  ],
+  "do_not_merge_label": "review: do not merge",
+  "hotfix_branch_prefixes": [
+    "claude/hotfix-",
+    "hotfix/"
+  ],
+  "main_workflows": {
+    "ci.yml": 1
+  },
+  "main_red_issue_labels": [
+    "bug",
+    "priority: critical",
+    "claude",
+    "triaged"
+  ],
+  "release_command": "gh workflow run release -f bump=patch",
+  "review_marker": "pr-review-routine head=",
+  "trigger_develop": "issue-developer",
+  "trigger_review": "pr-review",
+  "trigger_cooldown_min": 60,
+  "run_failed_window_hours": 24,
+  "hung_after_min": 180,
+  "late_after_min": 90,
+  "stale_lock_hours": 12,
+  "release_reminder_hours": 24,
+  "summary_alerts": [
+    "FORBIDDEN",
+    "not accessible by integration",
+    "bot-gh (failed|refused|exit 3)",
+    "guard (is )?broken",
+    "not configured",
+    "permission prompt",
+    "needs a person",
+    "rate limit",
+    "could not (post|push|open)",
+    "never retr(y|ied) with"
+  ]
+}

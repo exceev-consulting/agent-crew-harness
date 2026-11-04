@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# notify: send a short message to the maintainers' Telegram chat, for the harness routines.
+#
+#   notify [--silent] [--title TEXT] MESSAGE...    message from the arguments, or from stdin when there are none
+#   notify --setup                                 interactive: ask the bot token, find the chat, send a test
+#   notify --test                                  send a test message
+#   notify --status                                exit 0 when configured, 3 when not (prints nothing secret)
+#
+# Config: <secrets_dir>/telegram.env (chmod 600, secrets_dir from harness.json), written by --setup:
+#   TELEGRAM_BOT_TOKEN=123456:ABC...
+#   TELEGRAM_CHAT_ID=123456789          (a group id starts with -)
+#   TELEGRAM_QUIET_HOURS=23-7           (optional, local time: messages arrive without sound; default 23-7, "off" to disable)
+#
+# Safety:
+#   - The token never appears on a command line (ps would show it): curl reads the URL from stdin.
+#   - The text goes through scan-private first. Telegram is a third-party cloud, so a message with
+#     private infrastructure details is replaced by a short notice saying details were withheld.
+#   - Plain text only (no Markdown/HTML parsing): issue titles are written by outsiders.
+#
+# Exit: 0 sent, 2 usage, 3 not configured (callers carry on without Telegram), 5 Telegram refused or unreachable.
+set -uo pipefail
+
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+project=$(hconf project 2>/dev/null || echo harness)
+conf=${HARNESS_TELEGRAM_CONF:-$(hconf secrets_dir 2>/dev/null || echo "$HOME/.config/harness")/telegram.env}
+api_base=https://api.telegram.org
+# Tests point the helper at a fake API; never honoured outside test mode.
+if [[ ${HARNESS_TEST:-} == 1 && -n ${HARNESS_TELEGRAM_API:-} ]]; then
+    api_base=$HARNESS_TELEGRAM_API
+fi
+here=$(cd "$(dirname "$0")" && pwd)
+max_len=3500
+
+die() { echo "notify: $1" >&2; exit "${2:-1}"; }
+
+load_conf() {   # sets TOKEN and CHAT; never sources the file (no code runs from it)
+    TOKEN='' CHAT='' QUIET='23-7'
+    [[ -r $conf ]] || return 1
+    local k v
+    while IFS='=' read -r k v; do
+        v=${v%$'\r'}; v=${v#\'}; v=${v%\'}; v=${v#\"}; v=${v%\"}
+        case $k in
+            TELEGRAM_BOT_TOKEN) TOKEN=$v ;;
+            TELEGRAM_CHAT_ID) CHAT=$v ;;
+            TELEGRAM_QUIET_HOURS) QUIET=$v ;;
+        esac
+    done < "$conf"
+    [[ $TOKEN =~ ^[0-9]+:[A-Za-z0-9_-]{20,}$ && $CHAT =~ ^-?[0-9]+$ ]]
+}
+
+# tg METHOD [curl args...]: call the Bot API. The URL (with the token) goes to curl on stdin.
+tg() {
+    local method=$1; shift
+    printf 'url = "%s/bot%s/%s"\n' "$api_base" "$TOKEN" "$method" \
+        | curl -sS -m 20 --config - "$@"
+}
+
+in_quiet_hours() {   # QUIET is "FROM-TO" in local hours, may wrap past midnight
+    local from to h
+    [[ ${QUIET:-off} =~ ^([0-9]{1,2})-([0-9]{1,2})$ ]] || return 1
+    from=$((10#${BASH_REMATCH[1]})) to=$((10#${BASH_REMATCH[2]})) h=$((10#$(date +%H)))
+    if (( from <= to )); then (( h >= from && h < to )); else (( h >= from || h < to )); fi
+}
+
+send() {   # send TEXT SILENT(0|1)
+    local text=$1 silent=$2 out
+    in_quiet_hours && silent=1
+    out=$(tg sendMessage --data-urlencode "chat_id=$CHAT" --data-urlencode "text=$text" \
+        --data-urlencode "disable_web_page_preview=true" \
+        --data-urlencode "disable_notification=$([[ $silent == 1 ]] && echo true || echo false)") \
+        || die "Telegram is unreachable" 5
+    if ! jq -e '.ok == true' >/dev/null 2>&1 <<<"$out"; then
+        die "Telegram refused the message: $(jq -r '.description // "unknown error"' <<<"$out" 2>/dev/null)" 5
+    fi
+}
+
+setup() {
+    [[ -t 0 ]] || die "--setup needs a terminal" 2
+    command -v jq >/dev/null || die "jq is needed" 2
+    umask 077
+    mkdir -p "$(dirname "$conf")"
+    local keep=n
+    if load_conf 2>/dev/null || [[ -n ${TOKEN:-} ]]; then
+        read -rp "A bot token is already saved. Keep it? [Y/n] " keep
+        [[ ${keep,,} == n* ]] && keep=n || keep=y
+    fi
+    if [[ $keep != y ]]; then
+        read -rsp "Paste the bot token from @BotFather (it is not shown): " TOKEN; echo
+        TOKEN=${TOKEN//[[:space:]]/}
+        [[ $TOKEN =~ ^[0-9]+:[A-Za-z0-9_-]{20,}$ ]] || die "this does not look like a bot token (digits:letters)" 2
+    fi
+    local me user
+    me=$(tg getMe) || die "Telegram is unreachable" 5
+    jq -e '.ok == true' >/dev/null 2>&1 <<<"$me" || die "Telegram refused the token: $(jq -r '.description // "?"' <<<"$me" 2>/dev/null)" 5
+    user=$(jq -r '.result.username' <<<"$me")
+    echo "Bot found: @$user"
+    echo
+    echo "Now open https://t.me/$user on your phone and press Start (or send it any message)."
+    echo "For a group: add @$user to the group, then send /start@$user in the group."
+    echo "Waiting up to 3 minutes..."
+    local deadline=$(( $(date +%s) + 180 )) updates chats="" offset=0
+    while (( $(date +%s) < deadline )); do
+        updates=$(tg getUpdates --data-urlencode "timeout=20" --data-urlencode "offset=$offset") || { sleep 3; continue; }
+        chats=$(jq -r '[.result[]? | (.message // .my_chat_member // .channel_post) | .chat
+                        | select(.id != null)] | unique_by(.id)
+                       | .[] | "\(.id)\t\(.type)\t\(.title // ([.first_name, .last_name] | map(select(. != null)) | join(" ")))"' \
+                <<<"$updates" 2>/dev/null)
+        [[ -n $chats ]] && break
+        offset=$(jq -r '[.result[]?.update_id] | max // -1 | . + 1' <<<"$updates" 2>/dev/null || echo 0)
+    done
+    [[ -n $chats ]] || die "no message reached the bot. Press Start in the chat with @$user, then run --setup again" 1
+    echo
+    echo "Chats that wrote to the bot:"
+    local i=0 id type name ids=()
+    while IFS=$'\t' read -r id type name; do
+        i=$((i + 1)); ids+=("$id")
+        printf '  %d) %s (%s) id %s\n' "$i" "$name" "$type" "$id"
+    done <<<"$chats"
+    local pick=1
+    if (( i > 1 )); then read -rp "Which one gets the notifications? [1-$i] " pick; fi
+    [[ $pick =~ ^[0-9]+$ ]] && (( pick >= 1 && pick <= i )) || die "no chat chosen" 2
+    CHAT=${ids[pick - 1]}
+    printf 'TELEGRAM_BOT_TOKEN=%s\nTELEGRAM_CHAT_ID=%s\n' "$TOKEN" "$CHAT" > "$conf"
+    chmod 600 "$conf"
+    echo "Saved to $conf (readable by you only)."
+    send "$project routines: Telegram notifications are on. You will get critical issues, security advisories, 'do not merge' reviews, failed checks on main, fixes waiting for a release, PRs ready for your review and routine failures." 0
+    echo "Test message sent. Check your phone."
+}
+
+silent=0 title=""
+case ${1:-} in
+    --setup) setup; exit $? ;;
+    --status) load_conf && { echo "notify: configured"; exit 0; }; echo "notify: not configured (run: $0 --setup)"; exit 3 ;;
+    --test) set -- "Test from the $project routines. If you read this, notifications work." ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+esac
+while (( $# )); do
+    case $1 in
+        --silent) silent=1; shift ;;
+        --title) title=${2:-}; shift 2 ;;
+        --) shift; break ;;
+        -*) die "unknown option $1" 2 ;;
+        *) break ;;
+    esac
+done
+if (( $# )); then text="$*"; else text=$(cat); fi
+[[ -n $title ]] && text="$title"$'\n'"$text"
+[[ -n ${text//[[:space:]]/} ]] || die "empty message" 2
+
+load_conf || die "not configured (run: $0 --setup)" 3
+command -v jq >/dev/null || die "jq is needed" 5
+
+"$here/scan-private" <<<"$text" >/dev/null 2>&1
+case $? in
+    0) ;;
+    4) text="${title:-$project routines}"$'\n'"A notification was withheld because it contained private infrastructure details. Open the Claude app for the run summary." ;;
+    *) text="${title:-$project routines}"$'\n'"A notification was withheld: the private-data guard is broken (scan-private). Check it." ;;
+esac
+(( ${#text} > max_len )) && text="${text:0:max_len}"$'\n'"[cut]"
+send "$text" "$silent"

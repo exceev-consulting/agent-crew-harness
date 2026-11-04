@@ -1,0 +1,20 @@
+{
+  "project": "my-project",
+  "repo": "my-org/my-project",
+  "default_branch": "main",
+  "main_clone": "/home/me/src/my-project",
+  "harness_dir": "/home/me/.cache/my-project-harness",
+  "secrets_dir": "/home/me/.config/my-project-harness",
+  "tasks_dir": "/home/me/.claude/scheduled-tasks",
+  "task_prefix": "my-project-",
+  "maintainer": "my-github-login",
+  "co_maintainer": "second-maintainer-login",
+  "git_author": "Your Name <you@example.com>",
+  "bot_app": "my-project-claude",
+  "bot_user_id": "000000000",
+  "review_app": "my-project-review",
+  "release_app": "my-project-release",
+  "canary": "MY-PROJECT-CANARY-0000",
+  "app_process": "claude-desktop",
+  "harness_repo": "/home/me/src/agent-harness"
+}

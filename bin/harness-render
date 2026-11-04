@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""harness-render: turn the repository's templates into an install, and check an install for drift.
+
+  harness-render --list                  routines in this repository (name, schedule, title)
+  harness-render --render OUT [NAME...]  render RULES.md, the workflows and the routines (all, or the NAMEs) into OUT:
+                                         OUT/RULES.md, OUT/workflows/*, OUT/tasks/<task_prefix><name>/SKILL.md
+  harness-render --check [NAME...]       compare the rendered files with the install (harness_dir and tasks_dir);
+                                         exit 1 and list each file that differs
+  harness-render --lint                  every template uses only known placeholders and PROFILE.md section names,
+                                         and every routine carries a version that matches its marker
+  harness-render --status                versions installed (harness_dir/installed.json) against this repository
+
+Settings: harness.json (or $HARNESS_CONFIG). A placeholder is {{key}} with a key of harness.json, or one derived from it:
+repo_owner, repo_name. Routine prompts refer to PROFILE.md sections by their exact titles (docs/profile.md).
+"""
+import json
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "lib"))
+import harness  # noqa: E402
+
+PLACEHOLDER = re.compile(r"\{\{([a-z_]+)\}\}")
+KEYS = {"project", "repo", "repo_owner", "repo_name", "default_branch", "main_clone", "harness_dir", "secrets_dir",
+        "tasks_dir", "task_prefix", "maintainer", "co_maintainer", "git_author", "bot_app", "bot_user_id", "review_app",
+        "release_app", "canary", "app_process"}
+SKILLS = {"code-review", "security-review", "simplify"}
+REQUIRES = {"bot_app", "review_app", "telegram", "workflow", "org_projects", "issue_fields", "actions_write"}
+SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+SECTIONS = ["Project", "Read first", "Machine safety", "Safe commands", "CI checks", "Protected paths", "Release",
+            "Conventions", "Code review checklist", "Security review checklist", "Vulnerabilities", "Labels", "Milestones",
+            "Commits and pull requests", "CI workflows", "Bug hunting areas", "Market research", "Public examples"]
+
+
+def version():
+    v = ROOT / "VERSION"
+    return v.read_text().strip() if v.is_file() else "0.0.0"
+
+
+def settings():
+    h = harness.load()
+    h.setdefault("default_branch", "main")
+    h.setdefault("app_process", "claude-desktop")
+    return h
+
+
+def render(text, h):
+    def sub(m):
+        if m.group(1) not in h:
+            raise KeyError(f"unknown placeholder {{{{{m.group(1)}}}}}")
+        return str(h[m.group(1)])
+    return PLACEHOLDER.sub(sub, text)
+
+
+def routines(names=None):
+    out = []
+    for d in sorted((ROOT / "routines").iterdir()):
+        if (d / "SKILL.md").is_file() and (not names or d.name in names):
+            meta = json.loads((d / "routine.json").read_text()) if (d / "routine.json").is_file() else {}
+            out.append((d.name, d / "SKILL.md", meta))
+    if names:
+        missing = set(names) - {n for n, _, _ in out}
+        if missing:
+            raise SystemExit(f"unknown routine(s): {', '.join(sorted(missing))}")
+    return out
+
+
+def plan(h, names=None):
+    """(template, destination relative to an install root or the tasks dir, kind)"""
+    items = [(ROOT / "core" / "RULES.md", Path("RULES.md"), "harness")]
+    items += [(f, Path("workflows") / f.name, "harness") for f in sorted((ROOT / "workflows").glob("*")) if f.is_file()]
+    items += [(skill, Path(h["task_prefix"] + name) / "SKILL.md", "task") for name, skill, _ in routines(names)]
+    for unit in sorted((ROOT / "lib" / "systemd").glob("*.in")):
+        items.append((unit, Path("systemd") / (h["task_prefix"] + unit.name[:-3]), "systemd"))
+    return items
+
+
+def body(text):
+    """A SKILL.md without its frontmatter: the app writes its own when it creates the task."""
+    if text.startswith("---\n"):
+        end = text.find("\n---\n", 4)
+        if end != -1:
+            return text[end + 5:].lstrip("\n")
+    return text
+
+
+def main(argv):
+    if argv == ["--list"]:
+        for name, _, meta in routines():
+            print(f"{name:20} {meta.get('cron', '-'):22} {meta.get('title', '')}")
+        return 0
+    if argv == ["--lint"]:
+        bad = 0
+        known_ref = re.compile(r"PROFILE\.md, ([A-Z][a-z]+(?: [a-z]+)*)")
+        for f in [ROOT / "core" / "RULES.md", *sorted((ROOT / "workflows").glob("*")), *sorted((ROOT / "routines").glob("*/SKILL.md"))]:
+            text = f.read_text()
+            for key in set(PLACEHOLDER.findall(text)) - KEYS:
+                print(f"{f.relative_to(ROOT)}: unknown placeholder {{{{{key}}}}}")
+                bad = 1
+            for ref in set(known_ref.findall(text)):
+                if not any(ref == s or ref.startswith(s + " ") for s in SECTIONS):
+                    print(f"{f.relative_to(ROOT)}: PROFILE.md section \"{ref}\" is not in docs/profile.md")
+                    bad = 1
+            if f.parent.parent.name == "routines":
+                if not (f.parent / "routine.json").is_file():
+                    print(f"{f.relative_to(ROOT)}: no routine.json next to it")
+                    bad = 1
+                    continue
+                meta = json.loads((f.parent / "routine.json").read_text())
+                name, rver = f.parent.name, str(meta.get("version", ""))
+                if meta.get("name") != name:
+                    print(f"{f.relative_to(ROOT)}: routine.json name is not {name}")
+                    bad = 1
+                if not SEMVER.match(rver):
+                    print(f"{f.relative_to(ROOT)}: routine.json version must be X.Y.Z")
+                    bad = 1
+                elif text.rstrip().splitlines()[-1] != f"<!-- harness-routine {name} v{rver} -->":
+                    print(f"{f.relative_to(ROOT)}: last line must be <!-- harness-routine {name} v{rver} -->")
+                    bad = 1
+                for k in ("cron", "title", "description"):
+                    if not meta.get(k):
+                        print(f"{f.relative_to(ROOT)}: routine.json lacks {k}")
+                        bad = 1
+                for sk in set(meta.get("skills", [])) - SKILLS:
+                    print(f"{f.relative_to(ROOT)}: unknown skill {sk} (known: {', '.join(sorted(SKILLS))})")
+                    bad = 1
+                for rq in set(meta.get("requires", [])) | set(meta.get("optional", [])):
+                    if rq not in REQUIRES:
+                        print(f"{f.relative_to(ROOT)}: unknown requirement {rq}")
+                        bad = 1
+                if not text.startswith("---\nname: {{task_prefix}}" + name + "\n"):
+                    print(f"{f.relative_to(ROOT)}: frontmatter must start with name: {{{{task_prefix}}}}{name}")
+                    bad = 1
+                if "RULES.md" not in text or "PROFILE.md" not in text:
+                    print(f"{f.relative_to(ROOT)}: does not tell the run to read RULES.md and PROFILE.md")
+                    bad = 1
+        print("lint: ok" if not bad else "lint: problems above")
+        return bad
+    if argv == ["--status"]:
+        h = settings()
+        manifest = Path(h["harness_dir"]) / "installed.json"
+        inst = json.loads(manifest.read_text()) if manifest.is_file() else {"routines": {}}
+        print(f"harness: installed {inst.get('harness_version', '-')}, repository {version()}")
+        for name, _, meta in routines():
+            have, want = inst["routines"].get(name), meta.get("version")
+            state = "not installed" if have is None else "up to date" if have == want else f"update {have} -> {want}"
+            print(f"  {name:20} {state}")
+        for name in sorted(set(inst["routines"]) - {n for n, _, _ in routines()}):
+            print(f"  {name:20} installed {inst['routines'][name]}, no longer in the repository")
+        return 0
+    h = settings()
+    if len(argv) >= 2 and argv[0] == "--render":
+        out = Path(argv[1])
+        for tpl, rel, kind in plan(h, argv[2:] or None):
+            dest = out / ("tasks" if kind == "task" else "") / rel
+            if kind == "task":
+                meta_dir = out / "tasks" / rel.parent
+                meta_dir.mkdir(parents=True, exist_ok=True)
+                (meta_dir / "prompt.md").write_text(body(render(tpl.read_text(), h)))
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(render(tpl.read_text(), h))
+        rendered = {n: m.get("version") for n, _, m in routines(argv[2:] or None)}
+        (out / "installed.json").write_text(json.dumps(
+            {"harness_version": version(), "routines": rendered}, indent=1) + "\n")
+        print(f"rendered into {out}")
+        return 0
+    if argv and argv[0] == "--check":
+        drift = 0
+        for tpl, rel, kind in plan(h, argv[1:] or None):
+            if kind == "systemd":
+                dest = Path.home() / ".config/systemd/user" / rel.name
+            else:
+                dest = (Path(h["tasks_dir"]) if kind == "task" else Path(h["harness_dir"])) / rel
+            want = render(tpl.read_text(), h)
+            if not dest.is_file():
+                print(f"missing: {dest}")
+                drift = 1
+            elif (body(dest.read_text()).rstrip() != body(want).rstrip()) if kind == "task" else dest.read_text() != want:
+                print(f"drift: {dest} differs from {tpl.relative_to(ROOT)}")
+                drift = 1
+        print("check: the install matches the templates" if not drift else "check: run the installer to update")
+        return drift
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

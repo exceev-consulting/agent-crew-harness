@@ -1,0 +1,192 @@
+[
+ {
+  "color": "1d76db",
+  "description": "Has acceptance criteria and verification commands: Claude Code or Codex can pick it up",
+  "name": "agent-ready"
+ },
+ {
+  "color": "d73a4a",
+  "description": "Something isn't working",
+  "name": "bug"
+ },
+ {
+  "color": "b60205",
+  "description": "A required check fails on the latest commit",
+  "name": "ci-failing"
+ },
+ {
+  "color": "d97757",
+  "description": "Opened by a Claude Code routine",
+  "name": "claude"
+ },
+ {
+  "color": "0366d6",
+  "description": "Updates a dependency or GitHub Action",
+  "name": "dependencies"
+ },
+ {
+  "color": "0075ca",
+  "description": "Improvements or additions to documentation",
+  "name": "documentation"
+ },
+ {
+  "color": "cfd3d7",
+  "description": "This issue or pull request already exists",
+  "name": "duplicate"
+ },
+ {
+  "color": "a2eeef",
+  "description": "New feature or request",
+  "name": "enhancement"
+ },
+ {
+  "color": "3e4b9e",
+  "description": "Groups related sub-issues; progress shows in the Sub-issues panel",
+  "name": "epic"
+ },
+ {
+  "color": "d4c5f9",
+  "description": "First pull request from this contributor",
+  "name": "first-time contributor"
+ },
+ {
+  "color": "7057ff",
+  "description": "Good for newcomers",
+  "name": "good first issue"
+ },
+ {
+  "color": "008672",
+  "description": "Extra attention is needed",
+  "name": "help wanted"
+ },
+ {
+  "color": "e4e669",
+  "description": "This doesn't seem right",
+  "name": "invalid"
+ },
+ {
+  "color": "f9d0c4",
+  "description": "User-visible change without a CHANGELOG.md line",
+  "name": "needs-changelog"
+ },
+ {
+  "color": "fbca04",
+  "description": "CI is waiting for a maintainer to approve the workflow run",
+  "name": "needs-ci-approval"
+ },
+ {
+  "color": "fbca04",
+  "description": "Waiting for details from the reporter",
+  "name": "needs-info"
+ },
+ {
+  "color": "e99695",
+  "description": "Has merge conflicts with main",
+  "name": "needs-rebase"
+ },
+ {
+  "color": "b60205",
+  "description": "Breaks servers or security now: fix first",
+  "name": "priority: critical"
+ },
+ {
+  "color": "d93f0b",
+  "description": "Needed for the current phase",
+  "name": "priority: high"
+ },
+ {
+  "color": "0e8a16",
+  "description": "Nice to have",
+  "name": "priority: low"
+ },
+ {
+  "color": "fbca04",
+  "description": "Important, not urgent",
+  "name": "priority: medium"
+ },
+ {
+  "color": "bfd4f2",
+  "description": "Feature idea waiting for a maintainer decision",
+  "name": "proposal"
+ },
+ {
+  "color": "d876e3",
+  "description": "Further information is requested",
+  "name": "question"
+ },
+ {
+  "color": "0e8a16",
+  "description": "Approved by a maintainer: routines may implement it",
+  "name": "ready"
+ },
+ {
+  "color": "fbca04",
+  "description": "Claude's latest review of the current commit suggests changes",
+  "name": "review: changes suggested"
+ },
+ {
+  "color": "b60205",
+  "description": "Claude's latest review of the current commit found a blocking or security problem",
+  "name": "review: do not merge"
+ },
+ {
+  "color": "0e8a16",
+  "description": "Claude's latest review of the current commit found nothing blocking",
+  "name": "review: looks good"
+ },
+ {
+  "color": "b60205",
+  "description": "Security fix or hardening of a default",
+  "name": "security"
+ },
+ {
+  "color": "d4c5f9",
+  "description": "Large: more than 3 days, may be split",
+  "name": "size: L"
+ },
+ {
+  "color": "bfdadc",
+  "description": "Medium: 1 to 3 days",
+  "name": "size: M"
+ },
+ {
+  "color": "c2e0c6",
+  "description": "Small: under a day",
+  "name": "size: S"
+ },
+ {
+  "color": "ededed",
+  "description": "Leave out of the release notes",
+  "name": "skip-changelog"
+ },
+ {
+  "color": "cccccc",
+  "description": "No activity for 30 days",
+  "name": "stale"
+ },
+ {
+  "color": "000000",
+  "description": "Waiting on another issue or an outside change",
+  "name": "status: blocked"
+ },
+ {
+  "color": "ededed",
+  "description": "Waiting for steps or output to reproduce",
+  "name": "status: needs-repro"
+ },
+ {
+  "color": "ededed",
+  "description": "New: a maintainer has not looked at it yet",
+  "name": "status: needs-triage"
+ },
+ {
+  "color": "c5def5",
+  "description": "First response done by the triage routine or a maintainer",
+  "name": "triaged"
+ },
+ {
+  "color": "ffffff",
+  "description": "This will not be worked on",
+  "name": "wontfix"
+ }
+]

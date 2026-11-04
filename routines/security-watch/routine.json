@@ -1,0 +1,16 @@
+{
+  "name": "security-watch",
+  "title": "Security watch",
+  "description": "Every 2 hours: new CVEs and advisories for the components in security-watch.json (GitHub advisories, OSV distro trackers, NVD, CISA KEV, pinned releases, plus a daily web pass); Telegram alert first, then issues when the project must change and a digest of operator actions.",
+  "cron": "5 */2 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Fill security-watch.json next to bin/ (components with kind and notes, feeds, pins): the routine judges each finding from those notes and the project's code. PROFILE.md, Release should give the command users run to update the project and any check that shows an old version. Telegram is optional (bin/notify exit 3).",
+  "optional": [
+    "telegram"
+  ]
+}

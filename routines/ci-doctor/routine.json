@@ -1,0 +1,16 @@
+{
+  "name": "ci-doctor",
+  "title": "CI doctor",
+  "description": "Every 2 hours (worker on Claude Sonnet): diagnoses failures of the long CI workflow (end-to-end or integration tests) on open pull requests, says whether the pull request caused them, re-runs other failures once per commit and keeps one issue per flaky test.",
+  "cron": "52 8-22/2 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Needs PROFILE.md, CI workflows, to name the long workflow, its jobs, test step, artifacts and result files; without it the routine does nothing. Without the app's Actions write permission it still diagnoses and comments, and asks a maintainer to re-run.",
+  "optional": [
+    "actions_write"
+  ]
+}

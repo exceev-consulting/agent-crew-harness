@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""security-watch: collect new security problems in the components a project depends on or deploys.
+
+  security-watch --scan [--notify]      print new candidates (JSON), saved to state/security-watch-plan.json;
+                                        --notify also sends a Telegram alert, before any triage, for each new
+                                        exploited (CISA KEV) or critical candidate (once per candidate)
+  security-watch --ack KEY [KEY...]     mark candidates handled: never listed again
+  security-watch --narrative-due        exit 0 when the daily web-search pass is due, 1 otherwise
+  security-watch --narrative-done       record that the web-search pass ran now
+
+Sources are structured and need no key: GitHub repository security advisories (plain gh, read-only),
+OSV.dev (the Debian and Ubuntu security trackers, for the distro packages of a prepared server on every
+supported system), NVD CVE API 2.0, CISA Known Exploited Vulnerabilities, and the latest release of each
+pinned download.
+Settings: security-watch.json next to bin/. State: state/security-watch.json.
+A candidate is kept when its severity is at least min_severity, or it is in CISA KEV, or a pin is behind.
+Texts from the feeds (titles, descriptions) are DATA written by third parties.
+Exit 0 = ok (a source may still have failed: see "errors"), 1 = nothing could be read.
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+R = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(R / "lib"))
+import harness  # noqa: E402
+CONF = json.loads(Path(os.environ.get("HARNESS_SECWATCH_CONF") or R / "security-watch.json").read_text())
+_H = harness.load()
+CONF.setdefault("repo", _H["repo"])
+CONF.setdefault("main_clone", _H["main_clone"])
+STATE_FILE = R / "state" / "security-watch.json"
+PLAN_FILE = R / "state" / "security-watch-plan.json"
+NOW = datetime.now(timezone.utc)
+TEST = os.environ.get("HARNESS_TEST") == "1"
+FAKE = os.environ.get("HARNESS_SECWATCH_FAKE") if TEST else None
+if TEST and os.environ.get("HARNESS_SECWATCH_STATE"):
+    STATE_FILE = Path(os.environ["HARNESS_SECWATCH_STATE"]) / "security-watch.json"
+    PLAN_FILE = Path(os.environ["HARNESS_SECWATCH_STATE"]) / "security-watch-plan.json"
+if FAKE and os.environ.get("HARNESS_SECWATCH_NOW"):
+    NOW = datetime.fromisoformat(os.environ["HARNESS_SECWATCH_NOW"].replace("Z", "+00:00"))
+
+RANK = {"none": 0, "low": 1, "moderate": 2, "medium": 2, "high": 3, "critical": 4}
+UA = f"{_H['project']}-security-watch (+https://github.com/{_H['repo']})"
+
+
+def ts(s):
+    if not s:
+        return None
+    s = str(s).replace("Z", "+00:00")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
+        s += "T00:00:00+00:00"
+    d = datetime.fromisoformat(s)
+    return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
+
+
+def short(text, n):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def fake(name):
+    p = Path(FAKE) / f"{name}.json"
+    if not p.exists():
+        raise RuntimeError(f"no fake data {name}")
+    return json.loads(p.read_text())
+
+
+def gh(name, path):
+    if FAKE:
+        return fake(name)
+    res = subprocess.run(["gh", "api", path], capture_output=True, text=True, timeout=120)
+    if res.returncode != 0:
+        raise RuntimeError(short(res.stderr, 200))
+    return json.loads(res.stdout)
+
+
+def http(name, url):
+    if FAKE and name:
+        return fake(name)
+    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode())
+
+
+def load_state():
+    st = json.loads(STATE_FILE.read_text()) if STATE_FILE.exists() else {}
+    st.setdefault("seen", {})
+    st.setdefault("since", {})
+    return st
+
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def since_for(st, source):
+    last = ts(st["since"].get(source))
+    if last:
+        return last - timedelta(days=CONF["overlap_days"])
+    return NOW - timedelta(days=CONF["first_run_lookback_days"])
+
+
+def nvd_severity(metrics):
+    for k in ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30"):
+        for m in metrics.get(k) or []:
+            d = m.get("cvssData", {})
+            if d.get("baseSeverity"):
+                return d["baseSeverity"].lower(), d.get("baseScore")
+    for m in metrics.get("cvssMetricV2") or []:
+        return (m.get("baseSeverity") or "none").lower(), m.get("cvssData", {}).get("baseScore")
+    return "none", None
+
+
+def roundup(x):
+    i = round(x * 100000)
+    return i / 100000.0 if i % 10000 == 0 else (i // 10000 + 1) / 10.0
+
+
+def cvss31(vector):
+    """Base score of a CVSS 3.x vector (None when it cannot be read)."""
+    try:
+        m = dict(part.split(":", 1) for part in vector.split("/")[1:])
+        changed = m["S"] == "C"
+        av = {"N": .85, "A": .62, "L": .55, "P": .2}[m["AV"]]
+        ac = {"L": .77, "H": .44}[m["AC"]]
+        pr = {"N": .85, "L": .68 if changed else .62, "H": .5 if changed else .27}[m["PR"]]
+        ui = {"N": .85, "R": .62}[m["UI"]]
+        cia = [{"H": .56, "L": .22, "N": 0}[m[k]] for k in ("C", "I", "A")]
+    except (KeyError, ValueError):
+        return None
+    iss = 1 - (1 - cia[0]) * (1 - cia[1]) * (1 - cia[2])
+    impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15 if changed else 6.42 * iss
+    if impact <= 0:
+        return 0.0
+    exploit = 8.22 * av * ac * pr * ui
+    return roundup(min((1.08 if changed else 1) * (impact + exploit), 10))
+
+
+def score_severity(score):
+    if score is None:
+        return "none"
+    return "none" if score == 0 else "low" if score < 4 else "medium" if score < 7 else "high" if score < 9 else "critical"
+
+
+def osv_post(name, body):
+    if FAKE:
+        return fake(name)
+    req = urllib.request.Request("https://api.osv.dev/v1/querybatch", data=json.dumps(body).encode(),
+                                 headers={"User-Agent": UA, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        return json.loads(r.read().decode())
+
+
+def osv_record(vid):
+    if FAKE:
+        return fake("osv_vuln_" + re.sub(r"[^A-Za-z0-9]+", "_", vid))
+    return http(None, f"https://api.osv.dev/v1/vulns/{urllib.parse.quote(vid)}")
+
+
+def osv_severity(rec):
+    """Ubuntu priority, else the highest CVSS 3 score, else the Debian urgency."""
+    sevs = rec.get("severity") or []
+    for s_ in sevs:
+        if s_.get("type") == "Ubuntu":
+            v = (s_.get("score") or "").lower()
+            return ("low" if v == "negligible" else v), None
+    scores = [cvss31(s_["score"]) for s_ in sevs if s_.get("type") == "CVSS_V3" and s_.get("score")]
+    scores = [x for x in scores if x is not None]
+    if scores:
+        return score_severity(max(scores)), max(scores)
+    for a in rec.get("affected") or []:
+        u = ((a.get("ecosystem_specific") or {}).get("urgency") or "").lower().rstrip("*")
+        if u in ("low", "medium", "high"):
+            return u, None
+        if u == "unimportant":
+            return "low", None
+    return "none", None
+
+
+def scan(notify=False):
+    st = load_state()
+    found = {}   # key -> candidate
+    errors = []
+    ok_sources = []
+
+    def add(key, **c):
+        c.setdefault("aliases", [])
+        cur = found.get(key)
+        if cur is None:
+            c["sources"] = [c.pop("source")]
+            found[key] = c
+            return
+        cur["sources"] = sorted(set(cur["sources"] + [c["source"]]))
+        cur["aliases"] = sorted(set(cur["aliases"] + c["aliases"]))
+        if RANK.get(c.get("severity"), 0) > RANK.get(cur.get("severity"), 0):
+            cur["severity"], cur["cvss"] = c["severity"], c.get("cvss")
+        cur["kev"] = cur.get("kev") or c.get("kev", False)
+        for f in ("title", "url"):
+            if not cur.get(f) and c.get(f):
+                cur[f] = c[f]
+        if c.get("patched") and c["patched"] not in (cur.get("patched") or ""):
+            cur["patched"] = "; ".join(x for x in (cur.get("patched"), c["patched"]) if x)[:400]
+
+    # 1. GitHub repository advisories (the panels and the upstream projects)
+    since = since_for(st, "github")
+    gh_ok = True
+    for src in CONF["github_advisories"]:
+        name = "ghsa_" + re.sub(r"[^a-z0-9]+", "_", src["repo"].lower())
+        try:
+            advs = gh(name, f"repos/{src['repo']}/security-advisories?state=published&per_page=30&sort=published&direction=desc")
+        except Exception as e:  # noqa: BLE001 - one repo failing must not stop the others
+            errors.append(f"github {src['repo']}: {e}")
+            gh_ok = False
+            continue
+        for a in advs or []:
+            pub = ts(a.get("published_at"))
+            if not pub or pub < since:
+                continue
+            cve, ghsa = a.get("cve_id"), a.get("ghsa_id")
+            patched = sorted({v.get("patched_versions") for v in a.get("vulnerabilities") or [] if v.get("patched_versions")})
+            score = (a.get("cvss") or {}).get("score")
+            add(cve or ghsa, source=f"github:{src['repo']}", component=src["component"], id=cve or ghsa,
+                aliases=[x for x in (cve, ghsa) if x], severity=(a.get("severity") or "none").lower(), cvss=score,
+                kev=False, published=a.get("published_at"), url=a.get("html_url"), title=short(a.get("summary"), 160),
+                patched=", ".join(patched)[:120])
+    if gh_ok:
+        ok_sources.append("github")
+
+    # 1b. OSV: Debian and Ubuntu security trackers, for the packages of a prepared server.
+    # Records are re-modified in bulk, so "new" means an id never seen before (state osv_known).
+    # The first run only learns the ids, except this year's ids modified in the lookback window.
+    since = since_for(st, "osv")
+    known = set(st.get("osv_known", []))
+    first_osv = not known
+    try:
+        pkgs = CONF.get("osv_packages", {})
+        queries = [{"package": {"name": pkg, "ecosystem": eco}} for pkg in pkgs for eco in CONF.get("osv_ecosystems", [])]
+        hits = {}   # osv id -> source package
+        pending = list(range(len(queries)))
+        tokens = {}
+        page = 0
+        while pending and page < 10:
+            body = {"queries": [dict(queries[i], **({"page_token": tokens[i]} if i in tokens else {})) for i in pending]}
+            res = osv_post(f"osv_batch_{page}", body).get("results", [])
+            nxt = []
+            for i, r in zip(pending, res):
+                pkg = queries[i]["package"]["name"]
+                for v in r.get("vulns") or []:
+                    vid = v.get("id", "")
+                    if vid in known:
+                        continue
+                    m = re.search(r"CVE-(\d{4})-", vid)
+                    mod = ts(v.get("modified"))
+                    recent = m and int(m.group(1)) >= NOW.year - (0 if first_osv else 1)
+                    if recent and (not first_osv or (mod and mod >= since)):
+                        hits.setdefault(vid, pkg)
+                    else:
+                        known.add(vid)
+                if r.get("next_page_token"):
+                    tokens[i] = r["next_page_token"]
+                    nxt.append(i)
+            pending, page = nxt, page + 1
+        # one record per CVE and distro family is enough: the others hold the same facts
+        picked = {}
+        for vid, pkg in sorted(hits.items()):
+            cve = re.search(r"CVE-\d{4}-\d+", vid).group(0)
+            picked.setdefault((cve, vid.split("-", 1)[0]), (vid, pkg))
+        details = sorted(picked.values())[: CONF.get("osv_max_details", 250)]
+        if len(picked) > len(details):
+            errors.append(f"osv: {len(picked) - len(details)} new records left for the next run (max_details)")
+        # the other records of a CVE we read are known through it
+        chosen = {vid for vid, _ in details}
+        for (cve, fam), (vid, _pkg) in picked.items():
+            if vid in chosen:
+                known.update(h for h in hits if cve in h and h.split("-", 1)[0] == fam)
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1 if FAKE else 8) as pool:
+            records = dict(zip([d[0] for d in details], pool.map(lambda d: osv_record(d[0]), details)))
+        for vid, pkg in details:
+            rec = records[vid]
+            known.add(vid)
+            pub = ts(rec.get("published"))
+            if not pub or pub < since - timedelta(days=CONF["first_run_lookback_days"]):
+                continue   # an old CVE whose record was only re-modified
+            component, floor = pkgs[pkg]
+            sev, score = osv_severity(rec)
+            if RANK.get(sev, 0) < RANK[floor]:
+                continue
+            cve = (rec.get("upstream") or [None])[0] or re.search(r"CVE-\d{4}-\d+", vid).group(0)
+            fixed = []
+            for a in rec.get("affected") or []:
+                eco = (a.get("package") or {}).get("ecosystem", "")
+                if eco not in CONF.get("osv_ecosystems", []):
+                    continue
+                for rg in a.get("ranges") or []:
+                    for ev in rg.get("events") or []:
+                        if ev.get("fixed"):
+                            fixed.append(f"{eco.replace(':LTS', '').replace(':', ' ')} {ev['fixed']}")
+            add(cve, source=f"osv:{vid.split('-', 1)[0].lower()}", component=component, id=cve, aliases=[cve, vid],
+                severity=sev, cvss=score, kev=False, published=rec.get("published"),
+                url=f"https://osv.dev/vulnerability/{vid}", title=short(rec.get("summary") or rec.get("details"), 160),
+                patched="; ".join(sorted(set(fixed)))[:300])
+        st["osv_known"] = sorted(known)
+        ok_sources.append("osv")
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"osv: {short(e, 160)}")
+
+    # 2. NVD (products without GitHub advisories). No API key: at most 5 requests per 30 s.
+    since = since_for(st, "nvd")
+    nvd_ok = True
+    for i, q in enumerate(CONF["nvd"]):
+        if i and not FAKE:
+            time.sleep(6.5)
+        params = {"pubStartDate": since.strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+                  "pubEndDate": NOW.strftime("%Y-%m-%dT%H:%M:%S.000Z"), "resultsPerPage": "200"}
+        if q.get("cvss_v3_severity"):
+            params["cvssV3Severity"] = q["cvss_v3_severity"]
+        if q.get("cpe"):
+            params["virtualMatchString"] = q["cpe"]
+        else:
+            params["keywordSearch"] = q["keyword"]
+            params["keywordExactMatch"] = ""
+        url = "https://services.nvd.nist.gov/rest/json/cves/2.0?" + urllib.parse.urlencode(params).replace("keywordExactMatch=", "keywordExactMatch")
+        name = "nvd_" + re.sub(r"[^a-z0-9]+", "_", q["component"].lower())
+        try:
+            data = http(name, url)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"nvd {q['component']}: {short(e, 160)}")
+            nvd_ok = False
+            continue
+        for v in data.get("vulnerabilities") or []:
+            cve = v.get("cve", {})
+            if cve.get("vulnStatus") == "Rejected":
+                continue
+            sev, score = nvd_severity(cve.get("metrics") or {})
+            desc = next((d["value"] for d in cve.get("descriptions") or [] if d.get("lang") == "en"), "")
+            add(cve["id"], source="nvd", component=q["component"], id=cve["id"], aliases=[cve["id"]], severity=sev,
+                cvss=score, kev=bool(cve.get("cisaExploitAdd")), published=cve.get("published"),
+                url=f"https://nvd.nist.gov/vuln/detail/{cve['id']}", title=short(desc, 160), patched="")
+    if nvd_ok:
+        ok_sources.append("nvd")
+
+    # 3. CISA KEV: exploited in the wild. New entries for our products, and a flag on every candidate.
+    since = since_for(st, "kev")
+    kev_ids = set()
+    try:
+        kev = http("kev", "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json")
+        for v in kev.get("vulnerabilities") or []:
+            kev_ids.add(v.get("cveID"))
+            added = ts(v.get("dateAdded"))
+            for f in CONF["kev"]:
+                vendor_ok = not f.get("vendor") or f["vendor"].lower() in (v.get("vendorProject") or "").lower()
+                product_ok = not f.get("product") or f["product"].lower() in (v.get("product") or "").lower()
+                if vendor_ok and product_ok and added and added >= since:
+                    add(v["cveID"], source="cisa-kev", component=f["component"], id=v["cveID"], aliases=[v["cveID"]],
+                        severity="critical", cvss=None, kev=True, published=v.get("dateAdded"),
+                        url=f"https://nvd.nist.gov/vuln/detail/{v['cveID']}",
+                        title=short(f"{v.get('vulnerabilityName')}. {v.get('requiredAction')}", 160), patched="")
+                    break
+        ok_sources.append("kev")
+    except Exception as e:  # noqa: BLE001
+        errors.append(f"cisa-kev: {short(e, 160)}")
+    for c in found.values():
+        if any(a in kev_ids for a in c["aliases"]):
+            c["kev"] = True
+
+    # 4. Pinned downloads behind their latest release
+    pins_ok = True
+    for p in CONF["pins"]:
+        name = "pin_" + re.sub(r"[^a-z0-9]+", "_", p["component"].lower())
+        try:
+            if FAKE:
+                d = fake(name)
+                current, latest = d["current"], d["latest"]
+            else:
+                text = subprocess.run(["git", "-C", CONF["main_clone"], "show", f"origin/{_H['default_branch']}:{p['file']}"],
+                                      capture_output=True, text=True, timeout=60, check=True).stdout
+                m = re.search(rf'^{re.escape(p["var"])}="([^"]+)"', text, re.M)
+                current = m.group(1) if m else None
+                try:
+                    latest = gh(name, f"repos/{p['repo']}/releases/latest")["tag_name"]
+                except Exception:  # noqa: BLE001 - some projects only tag
+                    latest = gh(name, f"repos/{p['repo']}/tags")[0]["name"]
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"pin {p['component']}: {short(e, 160)}")
+            pins_ok = False
+            continue
+        if current and latest and current != latest:
+            key = f"pin:{p['component']}:{latest}"
+            add(key, source="pin", component=p["component"], id=key, aliases=[], severity="pin", cvss=None, kev=False,
+                published=None, url=f"https://github.com/{p['repo']}/releases", patched=latest,
+                title=f"{p['var']} is {current}; the latest release is {latest}")
+    if pins_ok:
+        ok_sources.append("pins")
+
+    if not ok_sources:
+        print("security-watch: no source could be read: " + "; ".join(errors), file=sys.stderr)
+        return 1
+
+    # keep what matters and is new
+    min_rank = RANK[CONF["min_severity"]]
+    keep = []
+    for key, c in found.items():
+        if key in st["seen"] or any(a in st["seen"] for a in c["aliases"]):
+            continue
+        if not (c["severity"] == "pin" or c.get("kev") or RANK.get(c["severity"], 0) >= min_rank):
+            continue
+        c["key"] = key
+        meta = CONF["components"].get(c["component"], {})
+        c["kind"], c["notes"] = meta.get("kind", "?"), meta.get("notes", "")
+        keep.append(c)
+    order = {"pin": 0}
+    keep.sort(key=lambda c: (not c.get("kev"), -order.get(c["severity"], RANK.get(c["severity"], 0)), c.get("published") or ""))
+    plan = {"generated": NOW.isoformat(timespec="seconds"), "sources_ok": ok_sources, "errors": errors,
+            "candidates": keep[: CONF["max_candidates"]], "more": max(0, len(keep) - CONF["max_candidates"])}
+    for s in ok_sources:
+        st["since"][s] = NOW.isoformat(timespec="seconds")
+    if notify:
+        plan["prealert"] = prealert(st, keep)
+    save_json(STATE_FILE, st)
+    save_json(PLAN_FILE, plan)
+    print(json.dumps(plan, indent=1, ensure_ascii=False))
+    return 0
+
+
+def prealert(st, cands):
+    """Telegram alert before triage for new exploited or critical candidates, once each."""
+    sent = st.setdefault("prealerted", {})
+    urgent = [c for c in cands if (c.get("kev") or c["severity"] == "critical") and c["key"] not in sent]
+    if not urgent:
+        return "nothing urgent"
+    lines = [f"New, before triage. The security watch posts what it means for {_H['project']} next.", ""]
+    for c in urgent[:10]:
+        tag = "EXPLOITED (CISA KEV)" if c.get("kev") else c["severity"].upper()
+        lines.append(f"• {tag} · {c['component']} · {c['id']}\n  {c['title']}\n  {c['url']}")
+    if len(urgent) > 10:
+        lines.append(f"…and {len(urgent) - 10} more.")
+    cmd = [str(R / "bin" / "notify"), "--title", f"🚨 {_H['project']}: security alert"]
+    if TEST and os.environ.get("HARNESS_SECWATCH_NOTIFY"):
+        cmd[0] = os.environ["HARNESS_SECWATCH_NOTIFY"]
+    rc = subprocess.run(cmd, input="\n".join(lines), text=True, capture_output=True, timeout=60).returncode
+    if rc in (0, 3):
+        for c in urgent:
+            sent[c["key"]] = NOW.isoformat(timespec="seconds")
+        return "sent" if rc == 0 else "telegram not set up"
+    return f"notify failed (exit {rc}): retried next run"
+
+
+def main(argv):
+    try:
+        if argv and argv[0] == "--scan" and set(argv[1:]) <= {"--notify"}:
+            return scan(notify="--notify" in argv)
+        if argv and argv[0] == "--ack":
+            st = load_state()
+            for k in argv[1:]:
+                st["seen"][k] = NOW.isoformat(timespec="seconds")
+            cutoff = NOW - timedelta(days=400)
+            st["seen"] = {k: v for k, v in st["seen"].items() if ts(v) and ts(v) > cutoff}
+            save_json(STATE_FILE, st)
+            print(f"acked: {len(argv) - 1}")
+            return 0
+        if argv == ["--narrative-due"]:
+            last = ts(load_state().get("narrative_last"))
+            return 0 if not last or NOW - last > timedelta(hours=20) else 1
+        if argv == ["--narrative-done"]:
+            st = load_state()
+            st["narrative_last"] = NOW.isoformat(timespec="seconds")
+            save_json(STATE_FILE, st)
+            return 0
+    except Exception as e:  # noqa: BLE001
+        print(f"security-watch: {e}", file=sys.stderr)
+        return 1
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

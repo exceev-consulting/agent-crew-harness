@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# main-check: compare a main-snapshot taken at the start of a run with the maintainer's
+# working copy now, and decide whether the run may still push.
+#   main-check <before-snapshot> <worktree> <base-sha>
+# The maintainer (or another session) may switch branches, commit or edit files there during
+# a run: that is printed for the summary and does not block. The run is blocked only when a
+# file changed there during the run contains lines this run added, the sign of a subagent that
+# wrote to the wrong folder.
+# Exit 0 = safe to push, 5 = blocked, 3 = the check itself failed (treat as blocked).
+set -uo pipefail
+export LC_ALL=C
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+main=$(hconf main_clone) || exit 3
+(( $# == 3 )) || { echo "usage: main-check <before-snapshot> <worktree> <base-sha>" >&2; exit 3; }
+before=$1 wt=$2 base=$3
+[[ -r $before ]] || { echo "main-check: cannot read $before" >&2; exit 3; }
+git -C "$wt" rev-parse --verify -q "$base^{commit}" >/dev/null ||
+    { echo "main-check: $base is not a commit in $wt" >&2; exit 3; }
+
+after=$("$(dirname "$0")/main-snapshot") || { echo "main-check: main-snapshot failed" >&2; exit 3; }
+old_head=$(sed -n 's/^HEAD //p' "$before")
+new_head=$(sed -n 's/^HEAD //p' <<<"$after")
+[[ -n $old_head && -n $new_head ]] || { echo "main-check: no HEAD line in a snapshot" >&2; exit 3; }
+[[ $old_head == "$new_head" ]] || echo "HEAD moved in the maintainer copy: ${old_head:0:7} -> ${new_head:0:7}"
+
+# Lines worth comparing: trimmed, at least 20 characters (skips fi, done, }, return 1...).
+significant() { sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | awk 'length >= 20' | sort -u; }
+# Lines this run added to <path>: its diff since base, or the whole file when it is new.
+run_lines() {
+    if [[ -n $(git -C "$wt" ls-files -o --exclude-standard -- "$1") ]]; then
+        grep -Ih '' -- "$wt/$1"
+    else
+        git -C "$wt" diff -U0 --no-renames "$base" -- "$1" | grep '^+' | grep -v '^+++' | cut -c2-
+    fi | significant
+}
+# Lines the maintainer copy has in <path> beyond its HEAD: uncommitted additions, or the
+# whole file when it is untracked or ignored.
+main_lines() {
+    if git -C "$main" ls-files --error-unmatch -- "$1" >/dev/null 2>&1; then
+        git -C "$main" diff -U0 HEAD -- "$1" | grep '^+' | grep -v '^+++' | cut -c2-
+    elif [[ -f $main/$1 ]]; then
+        grep -Ih '' -- "$main/$1"
+    fi | significant
+}
+
+# Paths whose line differs between the two snapshots ("<sha256>  <path>" or "deleted  <path>").
+# Compared as sorted sets: the snapshot taken at the start may have been sorted in another locale.
+changed=$(comm -3 <(grep -v '^HEAD ' "$before" | sort -u) <(grep -v '^HEAD ' <<<"$after" | sort -u) |
+    sed -E 's/^\t//' | sed -n 's/^[^ ]*  //p' | sort -u)
+mine=$({
+    git -C "$wt" diff --name-only --no-renames "$base" || exit 3
+    git -C "$wt" ls-files -o --exclude-standard || exit 3
+} | sort -u) || { echo "main-check: cannot list the run's changes in $wt" >&2; exit 3; }
+
+blocked=0
+while IFS= read -r p; do
+    [[ -z $p ]] && continue
+    if ! grep -qxF -- "$p" <<<"$mine"; then
+        echo "changed in the maintainer copy, not touched by this run: $p"
+    elif [[ -n $(comm -12 <(run_lines "$p") <(main_lines "$p")) ]]; then
+        echo "BLOCKED: $p in the maintainer copy now contains lines this run added"
+        blocked=1
+    else
+        echo "changed in the maintainer copy, also changed by this run, but none of this run's lines are in it: $p"
+    fi
+done <<<"$changed"
+(( blocked )) && exit 5
+exit 0

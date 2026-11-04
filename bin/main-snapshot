@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# main-snapshot: content fingerprint of the maintainer's working copy, one line per path:
+# HEAD, every file with unstaged or staged changes, and every untracked or ignored file
+# (ignored ones too, so server-audit-*.txt reports count). Compare two snapshots with diff.
+set -uo pipefail
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+main=$(hconf main_clone) || exit 3
+cd "$main" || exit 3
+echo "HEAD $(git rev-parse HEAD)"
+{
+    git diff --name-only -z HEAD
+    git ls-files -o -z
+} | sort -zu | while IFS= read -r -d '' p; do
+    if [[ -e $p ]]; then
+        printf '%s  %s\n' "$(sha256sum < "$p" | cut -d' ' -f1)" "$p"
+    else
+        printf 'deleted  %s\n' "$p"
+    fi
+done

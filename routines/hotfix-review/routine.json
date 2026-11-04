@@ -1,0 +1,17 @@
+{
+  "name": "hotfix-review",
+  "title": "Hotfix review",
+  "description": "Hourly from 07:37 to 23:37: when a critical pull request has no review at its head, reviews it now with the pr-review routine's method; otherwise stops in seconds.",
+  "cron": "37 7-23 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app",
+    "review_app"
+  ],
+  "skills": [
+    "code-review",
+    "security-review"
+  ],
+  "version": "1.0.0",
+  "notes": "Part of the hotfix lane with the sentinel and hotfix-developer routines. Needs the pr-review routine installed (it follows its prompt) and sentinel.json in harness_dir (its gate, bin/sentinel-scan --gate review, reads the critical label and hotfix branch prefixes there)."
+}

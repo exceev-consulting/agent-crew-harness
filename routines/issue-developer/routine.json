@@ -1,0 +1,14 @@
+{
+  "name": "issue-developer",
+  "title": "Issue developer",
+  "description": "5 times a day (every 4 h): develops one issue a maintainer labelled agent-ready or ready, in ultracode mode with workflows/develop-issue.js, then commits, pushes and opens a pull request; also keeps its open pull requests mergeable.",
+  "cron": "47 7-23/4 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app",
+    "workflow"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Runs the Workflow tool (ultracode mode) with workflows/develop-issue.js; the skills are used inside that workflow and are optional. Fill PROFILE.md, CI checks, Safe commands, Protected paths, Conventions, Milestones and Commits and pull requests before enabling it. It starts no new issue while 5 or more of its pull requests are open, except a priority: critical one."
+}

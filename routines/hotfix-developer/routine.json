@@ -1,0 +1,14 @@
+{
+  "name": "hotfix-developer",
+  "title": "Hotfix developer",
+  "description": "Every 30 minutes (07:17-23:47): when a priority: critical issue has a maintainer's agent-ready or ready label and no pull request yet, develops it now by running the installed issue-developer prompt for critical issues only; otherwise ends in seconds.",
+  "cron": "17,47 7-23 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app",
+    "workflow"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Needs the issue-developer routine installed: it reads the installed issue-developer SKILL.md (tasks_dir, task_prefix + issue-developer) and follows it. The gate (bin/sentinel-scan --gate develop) uses sentinel.json. Skills are the ones the issue-developer prompt calls."
+}

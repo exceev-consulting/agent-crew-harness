@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# bot-gh: run `gh` as the Claude GitHub App of the harness routines, so
+# comments, reviews, issues and PRs show the app (<name>[bot]) as author.
+#
+# Config: <secrets_dir>/bot.env (chmod 600) with
+#   APP_ID=123456
+#   KEY_FILE=<secrets_dir>/app.pem
+#   INSTALLATION_ID=...   (optional, looked up from the repo when empty)
+# Exit 3 = not configured: the caller must not fall back to the personal gh login.
+# The token is passed to gh through the environment only and never printed.
+set -euo pipefail
+
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+repo=${HARNESS_BOT_REPO:-$(hconf repo)} || exit 3
+conf=${HARNESS_BOT_CONF:-$(hconf secrets_dir)/bot.env} || exit 3
+
+# Refuse to post private infrastructure details. What gets scanned is what GitHub would
+# receive: every argument except the paths of files passed with --body-file, --input or
+# field=@file (those are local and contain the user name), plus the content of those files.
+# Exit 4 = refused, nothing sent.
+args=("$@") scan_args=() files=()
+for ((i = 0; i < ${#args[@]}; i++)); do
+    a=${args[i]}
+    case $a in
+        --body-file|--input)
+            files+=("${args[i + 1]:-}"); scan_args+=("$a"); i=$((i + 1)); continue ;;
+        --body-file=*|--input=*)
+            files+=("${a#*=}"); scan_args+=("${a%%=*}"); continue ;;
+        *=@*)
+            files+=("${a#*=@}"); scan_args+=("${a%%=@*}=@"); continue ;;
+    esac
+    scan_args+=("$a")
+done
+scan_text=$(printf '%s\n' "${scan_args[@]}")
+for f in "${files[@]}"; do
+    if [[ -z $f || $f == - ]]; then
+        echo "bot-gh: refused: pass text as a file, not on stdin, so it can be checked" >&2
+        exit 4
+    fi
+    if [[ ! -r $f ]]; then
+        echo "bot-gh: refused: cannot read a file given with --body-file, --input or =@" >&2
+        exit 4
+    fi
+    scan_text+=$'\n'$(<"$f")
+done
+"$(dirname "$0")/scan-private" <<<"$scan_text" || exit $?
+
+if [[ ! -r $conf ]]; then
+    echo "bot-gh: not configured ($conf missing)" >&2
+    exit 3
+fi
+APP_ID='' KEY_FILE='' INSTALLATION_ID=''
+# shellcheck disable=SC1090
+source "$conf"
+if [[ -z $APP_ID || ! -r $KEY_FILE ]]; then
+    echo "bot-gh: not configured (APP_ID or KEY_FILE missing in $conf)" >&2
+    exit 3
+fi
+
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+now=$(date +%s)
+header=$(printf '{"alg":"RS256","typ":"JWT"}' | b64url)
+payload=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' $((now - 60)) $((now + 540)) "$APP_ID" | b64url)
+signature=$(printf '%s.%s' "$header" "$payload" | openssl dgst -sha256 -sign "$KEY_FILE" -binary | b64url)
+jwt="$header.$payload.$signature"
+
+api() {
+    curl -fsS -H "Authorization: Bearer $jwt" -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" "$@"
+}
+
+if [[ -z $INSTALLATION_ID ]]; then
+    INSTALLATION_ID=$(api "https://api.github.com/repos/$repo/installation" | jq -r .id)
+fi
+token=$(api -X POST "https://api.github.com/app/installations/$INSTALLATION_ID/access_tokens" | jq -r .token)
+if [[ -z $token || $token == null ]]; then
+    echo "bot-gh: could not get an installation token for $repo" >&2
+    exit 1
+fi
+
+GH_TOKEN=$token exec gh "$@"

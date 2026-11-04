@@ -1,0 +1,49 @@
+name: ci
+
+# Fast checks, no network, no secret: syntax and lint of the helpers, the templates' lint, and every test.
+# Actions are pinned to a commit (supply chain); Dependabot or a maintainer updates them.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Shell files
+        run: |
+          mapfile -t sh < <(grep -lE '^#!/usr/bin/env bash' bin/* tests/*.sh lib/*.sh 2>/dev/null; ls lib/harness.sh)
+          for f in "${sh[@]}"; do bash -n "$f"; done
+          shellcheck --version | sed -n 2p
+          shellcheck -S warning -x "${sh[@]}"
+
+      - name: Python files
+        run: |
+          mapfile -t py < <(grep -lE '^#!/usr/bin/env python3' bin/*; ls lib/*.py tests/*.py)
+          for f in "${py[@]}"; do python3 -I -m py_compile "$f"; done
+
+      - name: Workflow script parses
+        run: |
+          { echo '(async function(args, agent, phase, parallel, pipeline){'; sed 's/^export const meta/const meta/' workflows/develop-issue.js; echo '})'; } > "$RUNNER_TEMP/wrap.js"
+          node --check "$RUNNER_TEMP/wrap.js"
+
+      - name: Templates
+        env:
+          HARNESS_CONFIG: tests/fixtures/harness.json
+        run: |
+          bin/harness-render --lint
+          bin/harness-render --render "$RUNNER_TEMP/render"
+          ! grep -rnoE '\{\{[a-z_]+\}\}' "$RUNNER_TEMP/render"
+
+      - name: Tests
+        run: for t in tests/*.sh; do echo "== $t"; bash "$t"; done

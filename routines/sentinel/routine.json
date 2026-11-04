@@ -1,0 +1,16 @@
+{
+  "name": "sentinel",
+  "title": "Sentinel",
+  "description": "Every 30 minutes (07:00-23:30): carries out bin/sentinel-scan's plan, telling the maintainers once per event about critical issues, advisories, do-not-merge reviews, a red default branch, unreleased critical fixes and routine failures, and opening an issue when the default branch stays red.",
+  "cron": "*/30 7-23 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Telegram is optional: without it (bin/notify exit 3) messages still count as delivered and the desktop notification still fires. Settings in sentinel.json next to bin/ (labels, workflows that make the default branch red, alert patterns).",
+  "optional": [
+    "telegram"
+  ]
+}

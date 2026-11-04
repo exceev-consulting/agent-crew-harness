@@ -1,0 +1,431 @@
+{
+  "min_severity": "medium",
+  "first_run_lookback_days": 30,
+  "overlap_days": 2,
+  "max_candidates": 15,
+  "components": {
+    "Coolify": {
+      "kind": "panel",
+      "notes": "Deploy panel some users run (PANEL=coolify). Not installed by server-prep; the operator updates it from the panel."
+    },
+    "Dokploy": {
+      "kind": "panel",
+      "notes": "Deploy panel (PANEL=dokploy). Not installed by server-prep."
+    },
+    "Openship": {
+      "kind": "panel",
+      "notes": "Deploy panel (PANEL=openship). Not installed by server-prep."
+    },
+    "Docker Engine": {
+      "kind": "installed",
+      "notes": "docker step installs Docker CE from download.docker.com; unattended-upgrades includes origin Docker, so updates arrive automatically."
+    },
+    "containerd": {
+      "kind": "installed",
+      "notes": "Comes with Docker CE (containerd.io), auto-updated with Docker's origin."
+    },
+    "runc": {
+      "kind": "installed",
+      "notes": "Comes with containerd.io, auto-updated with Docker's origin."
+    },
+    "CrowdSec": {
+      "kind": "installed",
+      "notes": "ips step installs crowdsec + firewall bouncer from packagecloud.io (pinned 900). NOT auto-updated by unattended-upgrades (see issue #155)."
+    },
+    "cloudflared": {
+      "kind": "installed",
+      "notes": "Optional cloudflared step, pkg.cloudflare.com. NOT auto-updated."
+    },
+    "Tailscale": {
+      "kind": "installed",
+      "notes": "server-preconfig.sh installs it with tailscale.com/install.sh (pkgs.tailscale.com repo). NOT auto-updated unless the operator enables it."
+    },
+    "Telegraf": {
+      "kind": "installed",
+      "notes": "Optional telegraf step, repos.influxdata.com (pinned 900). NOT auto-updated."
+    },
+    "OpenSSH": {
+      "kind": "distro",
+      "notes": "Hardened by the ssh step. Distro package: unattended-upgrades installs the fix, the service restarts."
+    },
+    "sudo": {
+      "kind": "distro",
+      "notes": "Distro package; Ubuntu 26.04 uses sudo-rs instead. unattended-upgrades installs the fix."
+    },
+    "sudo-rs": {
+      "kind": "distro",
+      "notes": "Default sudo on Ubuntu 26.04. Distro package, unattended-upgrades."
+    },
+    "fail2ban": {
+      "kind": "distro",
+      "notes": "ips step. Distro package."
+    },
+    "UFW": {
+      "kind": "distro",
+      "notes": "firewall step. Distro package."
+    },
+    "Linux kernel": {
+      "kind": "distro",
+      "notes": "unattended-upgrades installs kernel fixes but a reboot is needed; the audit shows sys.reboot WARN."
+    },
+    "ufw-docker": {
+      "kind": "pinned",
+      "notes": "Script downloaded by the firewall step at a pinned version with a SHA-256 (UFW_DOCKER_VERSION / UFW_DOCKER_SHA256 in server-prep.sh)."
+    },
+    "glibc": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "OpenSSL": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "systemd": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "iptables": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "nftables": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "auditd": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "rkhunter": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "AIDE": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "endlessh": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "unattended-upgrades": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "apt": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "curl": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "git": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "GnuPG": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "chrony": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "libpwquality": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "cracklib": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "ca-certificates": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "PAM": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "bash": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "xz-utils": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    },
+    "zlib": {
+      "kind": "distro",
+      "notes": "Distro package: unattended-upgrades installs the fix within a day (security pocket); a service restart or a reboot may be needed."
+    }
+  },
+  "github_advisories": [
+    {
+      "component": "Coolify",
+      "repo": "coollabsio/coolify"
+    },
+    {
+      "component": "Dokploy",
+      "repo": "Dokploy/dokploy"
+    },
+    {
+      "component": "Openship",
+      "repo": "oblien/openship"
+    },
+    {
+      "component": "Docker Engine",
+      "repo": "moby/moby"
+    },
+    {
+      "component": "containerd",
+      "repo": "containerd/containerd"
+    },
+    {
+      "component": "runc",
+      "repo": "opencontainers/runc"
+    },
+    {
+      "component": "CrowdSec",
+      "repo": "crowdsecurity/crowdsec"
+    },
+    {
+      "component": "cloudflared",
+      "repo": "cloudflare/cloudflared"
+    },
+    {
+      "component": "Tailscale",
+      "repo": "tailscale/tailscale"
+    },
+    {
+      "component": "sudo-rs",
+      "repo": "memorysafety/sudo-rs"
+    },
+    {
+      "component": "fail2ban",
+      "repo": "fail2ban/fail2ban"
+    }
+  ],
+  "nvd": [
+    {
+      "component": "OpenSSH",
+      "cpe": "cpe:2.3:a:openbsd:openssh"
+    },
+    {
+      "component": "sudo",
+      "cpe": "cpe:2.3:a:sudo_project:sudo"
+    },
+    {
+      "component": "Telegraf",
+      "keyword": "Telegraf"
+    },
+    {
+      "component": "Tailscale",
+      "keyword": "Tailscale"
+    },
+    {
+      "component": "CrowdSec",
+      "keyword": "CrowdSec"
+    },
+    {
+      "component": "cloudflared",
+      "keyword": "cloudflared"
+    },
+    {
+      "component": "UFW",
+      "keyword": "Uncomplicated Firewall"
+    },
+    {
+      "component": "Docker Engine",
+      "keyword": "Docker Engine"
+    },
+    {
+      "component": "Coolify",
+      "keyword": "Coolify"
+    },
+    {
+      "component": "Dokploy",
+      "keyword": "Dokploy"
+    },
+    {
+      "component": "fail2ban",
+      "keyword": "fail2ban"
+    },
+    {
+      "component": "Linux kernel",
+      "cpe": "cpe:2.3:o:linux:linux_kernel",
+      "cvss_v3_severity": "CRITICAL"
+    }
+  ],
+  "kev": [
+    {
+      "component": "OpenSSH",
+      "vendor": "OpenBSD",
+      "product": "OpenSSH"
+    },
+    {
+      "component": "Linux kernel",
+      "vendor": "Linux",
+      "product": "Kernel"
+    },
+    {
+      "component": "sudo",
+      "product": "Sudo"
+    },
+    {
+      "component": "Docker Engine",
+      "vendor": "Docker"
+    },
+    {
+      "component": "runc",
+      "product": "runc"
+    },
+    {
+      "component": "Coolify",
+      "product": "Coolify"
+    },
+    {
+      "component": "Dokploy",
+      "product": "Dokploy"
+    },
+    {
+      "component": "Tailscale",
+      "vendor": "Tailscale"
+    },
+    {
+      "component": "Telegraf",
+      "product": "Telegraf"
+    },
+    {
+      "component": "CrowdSec",
+      "vendor": "CrowdSec"
+    }
+  ],
+  "pins": [
+    {
+      "component": "ufw-docker",
+      "repo": "chaifeng/ufw-docker",
+      "file": "server-prep.sh",
+      "var": "UFW_DOCKER_VERSION"
+    }
+  ],
+  "osv_ecosystems": [
+    "Debian:12",
+    "Debian:13",
+    "Ubuntu:22.04:LTS",
+    "Ubuntu:24.04:LTS",
+    "Ubuntu:26.04:LTS"
+  ],
+  "osv_max_details": 250,
+  "osv_packages": {
+    "openssh": [
+      "OpenSSH",
+      "medium"
+    ],
+    "sudo": [
+      "sudo",
+      "medium"
+    ],
+    "rust-sudo-rs": [
+      "sudo-rs",
+      "medium"
+    ],
+    "glibc": [
+      "glibc",
+      "high"
+    ],
+    "openssl": [
+      "OpenSSL",
+      "high"
+    ],
+    "systemd": [
+      "systemd",
+      "high"
+    ],
+    "ufw": [
+      "UFW",
+      "medium"
+    ],
+    "iptables": [
+      "iptables",
+      "high"
+    ],
+    "nftables": [
+      "nftables",
+      "high"
+    ],
+    "fail2ban": [
+      "fail2ban",
+      "medium"
+    ],
+    "audit": [
+      "auditd",
+      "medium"
+    ],
+    "rkhunter": [
+      "rkhunter",
+      "medium"
+    ],
+    "aide": [
+      "AIDE",
+      "medium"
+    ],
+    "endlessh": [
+      "endlessh",
+      "medium"
+    ],
+    "unattended-upgrades": [
+      "unattended-upgrades",
+      "medium"
+    ],
+    "apt": [
+      "apt",
+      "high"
+    ],
+    "curl": [
+      "curl",
+      "high"
+    ],
+    "git": [
+      "git",
+      "high"
+    ],
+    "gnupg2": [
+      "GnuPG",
+      "high"
+    ],
+    "chrony": [
+      "chrony",
+      "medium"
+    ],
+    "libpwquality": [
+      "libpwquality",
+      "medium"
+    ],
+    "cracklib2": [
+      "cracklib",
+      "medium"
+    ],
+    "ca-certificates": [
+      "ca-certificates",
+      "medium"
+    ],
+    "pam": [
+      "PAM",
+      "medium"
+    ],
+    "bash": [
+      "bash",
+      "high"
+    ],
+    "xz-utils": [
+      "xz-utils",
+      "high"
+    ],
+    "zlib": [
+      "zlib",
+      "high"
+    ]
+  }
+}

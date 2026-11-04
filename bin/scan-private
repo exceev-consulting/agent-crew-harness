@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# scan-private: refuse text that contains the maintainer's private infrastructure.
+# Reads the files given as arguments, or stdin when there are none.
+# Exit 0 = clean, 4 = private details found (the match itself is never printed),
+# 3 = the guard itself is broken (missing or bad pattern file): treat as "do not post".
+set -uo pipefail
+
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+patterns=$(hconf secrets_dir 2>/dev/null)/private-patterns.txt
+if [[ ${HARNESS_TEST:-} == 1 && -n ${HARNESS_PRIVATE_PATTERNS:-} ]]; then
+    patterns=$HARNESS_PRIVATE_PATTERNS
+fi
+if [[ ! -r $patterns ]]; then
+    echo "scan-private: guard broken: cannot read the pattern file" >&2
+    exit 3
+fi
+
+rules=$(tr -d '\r' < "$patterns" | grep -v '^#' | sed '/^$/d')
+if [[ -z $rules ]]; then
+    echo "scan-private: guard broken: the pattern file is empty" >&2
+    exit 3
+fi
+# Public addresses that docs may mention: the Tailscale range itself and its DNS resolver.
+allow='\b100\.64\.0\.0\b|\b100\.100\.100\.100\b'
+
+if (( $# )); then text=$(cat -- "$@") || exit 3; else text=$(cat) || exit 3; fi
+filtered=$(sed -E "s/$allow//g" <<<"$text")
+# No pipe into grep -q: with pipefail an early exit of grep would look like "no match".
+grep -Eiq -e "$rules" <<<"$filtered"
+rc=$?
+case $rc in
+    0) echo "scan-private: refused: the text contains private infrastructure details (hosts, IPs or client names). Remove them and try again." >&2
+       exit 4 ;;
+    1) exit 0 ;;
+    *) echo "scan-private: guard broken: a pattern is invalid (grep exit $rc)" >&2
+       exit 3 ;;
+esac

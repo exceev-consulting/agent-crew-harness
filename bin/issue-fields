@@ -1,0 +1,311 @@
+#!/usr/bin/env python3
+"""issue-fields: fill the org issue fields (Priority, Effort, Start date, Target date)
+on every open issue, sub-issue and epic.
+
+  issue-fields [--dry-run] [--issue N ...]
+
+Where each value comes from:
+  Priority     the `priority:` label (critical = Urgent). Epic: highest Priority of its open sub-issues.
+  Effort       the `size:` label (S = Low, M = Medium, L = High). Epic: open sub-issues added up
+               (S half a day, M 2 days, L 5 days; under 1 day = Low, up to 3 = Medium, more = High).
+  Start date   the day the first open or merged PR linked to the issue was opened (Europe/Paris).
+               Epic: earliest start of its sub-issues. Never moved later or cleared once set.
+  Target date  the milestone's due date when it has one. Otherwise Start date + 1/3/7 days for
+               Effort Low/Medium/High. Epic: latest target of its open sub-issues, only when all have one.
+No source, no value: a field stays empty until there is something to base it on.
+
+A field a person set, changed or cleared (its last change is not by the bot) is never touched.
+Reads use the personal `gh` login; writes go through bot-gh (one mutation per issue).
+Last, it prints MISSING lines: open issues (not epics, questions, proposals waiting for a
+decision or needs-info) without a priority: or size: label, for the routine to estimate.
+
+Exit 0 = done, 1 = some writes failed, 2 = could not read GitHub, 3 = bot-gh not configured.
+"""
+import argparse
+import datetime as dt
+import json
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import harness  # noqa: E402
+_H = harness.load()
+OWNER, NAME = _H["repo_owner"], _H["repo_name"]
+BOT_LOGIN = _H["bot_app"]
+BOT_GH = Path(__file__).resolve().parent / "bot-gh"
+TZ = ZoneInfo("Europe/Paris")
+
+PRIORITY_LABELS = {"priority: critical": "Urgent", "priority: high": "High",
+                   "priority: medium": "Medium", "priority: low": "Low"}
+RANK = {"Low": 1, "Medium": 2, "High": 3, "Urgent": 4}
+SIZE_LABELS = {"size: S": "Low", "size: M": "Medium", "size: L": "High"}
+EFFORT_DAYS = {"Low": 0.5, "Medium": 2, "High": 5}
+TARGET_OFFSET = {"Low": 1, "Medium": 3, "High": 7}
+SKIP_LABELS = {"question", "duplicate", "invalid", "wontfix"}
+FIELDS = ("Priority", "Effort", "Start date", "Target date")
+
+FIELD_NAME = "... on IssueFieldSingleSelect { name } ... on IssueFieldDate { name }"
+PRS = "closedByPullRequestsReferences(first: 10, includeClosedPrs: true) { nodes { number createdAt state } }"
+ISSUES_QUERY = """
+query($cursor: String) {
+  repository(owner: "%s", name: "%s") {
+    issues(first: 40, states: OPEN, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        id number title
+        labels(first: 30) { nodes { name } }
+        milestone { title dueOn }
+        subIssues(first: 50) { totalCount nodes { number state repository { nameWithOwner } %s } }
+        %s
+        issueFieldValues(first: 10) { nodes {
+          ... on IssueFieldSingleSelectValue { name field { %s } }
+          ... on IssueFieldDateValue { value field { %s } } } }
+        timelineItems(last: 50, itemTypes: [ISSUE_FIELD_ADDED_EVENT, ISSUE_FIELD_CHANGED_EVENT, ISSUE_FIELD_REMOVED_EVENT]) {
+          nodes {
+            ... on IssueFieldAddedEvent { actor { login } issueField { %s } }
+            ... on IssueFieldChangedEvent { actor { login } issueField { %s } }
+            ... on IssueFieldRemovedEvent { actor { login } issueField { %s } } } }
+      }
+    }
+  }
+}""" % (OWNER, NAME, PRS, PRS, FIELD_NAME, FIELD_NAME, FIELD_NAME, FIELD_NAME, FIELD_NAME)
+
+FIELDS_QUERY = """
+{ organization(login: "%s") { issueFields(first: 30) { nodes {
+  ... on IssueFieldSingleSelect { id name options { id name } }
+  ... on IssueFieldDate { id name } } } } }""" % OWNER
+
+
+def gh_graphql(query: str, **variables) -> dict:
+    cmd = ["gh", "api", "graphql", "-f", f"query={query}"]
+    for key, value in variables.items():
+        if value is not None:
+            cmd += ["-F", f"{key}={value}"]
+    out = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or f"gh exited {out.returncode}")
+    return json.loads(out.stdout)["data"]
+
+
+def paris_day(iso: str) -> dt.date:
+    return dt.datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(TZ).date()
+
+
+def started_prs(prs: dict) -> list[dict]:
+    return [pr for pr in prs["nodes"] if pr["state"] in ("OPEN", "MERGED")]
+
+
+class Issue:
+    def __init__(self, node: dict):
+        self.id, self.number, self.title = node["id"], node["number"], node["title"]
+        self.labels = {label["name"] for label in node["labels"]["nodes"]}
+        self.milestone = node["milestone"]
+        # Sub-issues from other repositories are left out: their numbers would clash with ours.
+        self.subs = [sub for sub in node["subIssues"]["nodes"]
+                     if sub["repository"]["nameWithOwner"] == f"{OWNER}/{NAME}"]
+        self.is_epic = "epic" in self.labels or node["subIssues"]["totalCount"] > 0
+        self.prs = started_prs(node["closedByPullRequestsReferences"])
+        self.current: dict[str, str] = {}
+        for value in node["issueFieldValues"]["nodes"]:
+            if value and value.get("field"):
+                self.current[value["field"]["name"]] = value.get("name") or value.get("value")
+        # Who touched each field last: a person's choice (even a clear) always wins.
+        last_actor: dict[str, str] = {}
+        for event in node["timelineItems"]["nodes"]:
+            if event and event.get("issueField"):
+                last_actor[event["issueField"]["name"]] = (event.get("actor") or {}).get("login", "")
+        self.human = {field for field in FIELDS
+                      if (field in last_actor and last_actor[field] != BOT_LOGIN)
+                      or (field not in last_actor and field in self.current)}
+        self.want: dict[str, tuple[str | None, str]] = {}  # field -> (value, rationale)
+        self.days = 0.0  # effort of the open work in days: own Effort, or the open sub-issues added up
+
+    def final(self, field: str) -> str | None:
+        """The value the field ends up with after this run."""
+        if field in self.human or field not in self.want:
+            return self.current.get(field)
+        return self.want[field][0]
+
+    def label_value(self, mapping: dict[str, str]) -> tuple[str, str] | None:
+        hits = [label for label in self.labels if label in mapping]
+        top = max(hits, key=lambda label: RANK[mapping[label]], default=None)
+        return (mapping[top], top) if top else None
+
+
+def plan(issue: Issue, issues: dict[int, "Issue"], done: set[int]) -> None:
+    """Fill issue.want, sub-issues first (epics are computed from them)."""
+    if issue.number in done:
+        return
+    done.add(issue.number)
+    open_subs = [issues[sub["number"]] for sub in issue.subs if sub["number"] in issues]
+    for sub in open_subs:
+        plan(sub, issues, done)
+
+    # Priority
+    from_label = issue.label_value(PRIORITY_LABELS)
+    if from_label:
+        issue.want["Priority"] = (from_label[0], f"From the label {from_label[1]}")
+    elif issue.is_epic:
+        ranked = [p for p in (sub.final("Priority") for sub in open_subs) if p in RANK]
+        if ranked:
+            top = max(ranked, key=RANK.get)
+            issue.want["Priority"] = (top, "Highest priority among the open sub-issues")
+    issue.want.setdefault("Priority", (None, "No priority: label"))
+
+    # Effort
+    from_label = issue.label_value(SIZE_LABELS)
+    if from_label:
+        issue.want["Effort"] = (from_label[0], f"From the label {from_label[1]}")
+    elif issue.is_epic:
+        days = sum(sub.days for sub in open_subs)
+        if days:
+            effort = "Low" if days < 1 else "Medium" if days <= 3 else "High"
+            issue.want["Effort"] = (effort, f"Open sub-issues add up to about {days:g} days")
+    issue.want.setdefault("Effort", (None, "No size: label"))
+    if issue.is_epic and not from_label:
+        issue.days = sum(sub.days for sub in open_subs)
+    else:
+        issue.days = EFFORT_DAYS.get(issue.final("Effort"), 0)
+
+    # Start date: sticky, only ever moved earlier.
+    starts: list[tuple[str, str]] = [(paris_day(pr["createdAt"]).isoformat(), f"PR #{pr['number']} opened that day")
+                                     for pr in issue.prs]
+    if issue.is_epic:
+        for sub in issue.subs:
+            if sub["number"] in issues:
+                if issues[sub["number"]].final("Start date"):
+                    starts.append((issues[sub["number"]].final("Start date"), f"Start of sub-issue #{sub['number']}"))
+            else:
+                starts += [(paris_day(pr["createdAt"]).isoformat(), f"PR #{pr['number']} of sub-issue #{sub['number']}")
+                           for pr in started_prs(sub["closedByPullRequestsReferences"])]
+    current_start = issue.current.get("Start date")
+    if starts:
+        earliest = min(starts)
+        if not current_start or earliest[0] < current_start:
+            issue.want["Start date"] = (earliest[0], f"Work started: {earliest[1]}")
+    issue.want.setdefault("Start date", (current_start, ""))
+
+    # Target date
+    start, effort = issue.final("Start date"), issue.final("Effort")
+    if issue.milestone and issue.milestone.get("dueOn"):
+        due = issue.milestone["dueOn"][:10]
+        issue.want["Target date"] = (due, f"Due date of the milestone {issue.milestone['title']}")
+    elif issue.is_epic:
+        targets = [sub.final("Target date") for sub in open_subs]
+        if targets and all(targets):
+            issue.want["Target date"] = (max(targets), "Latest target date among the open sub-issues")
+    elif start and effort in TARGET_OFFSET:
+        days = TARGET_OFFSET[effort]
+        target = (dt.date.fromisoformat(start) + dt.timedelta(days=days)).isoformat()
+        issue.want["Target date"] = (target, f"Start date + {days} day{'s' if days > 1 else ''} for Effort {effort}")
+    issue.want.setdefault("Target date", (None, "No milestone due date and no start date"))
+
+
+def field_input(field: dict, value: str | None, rationale: str) -> dict:
+    if value is None:
+        return {"fieldId": field["id"], "delete": True}
+    # Confidence below HIGH makes GitHub keep the value as a pending suggestion for a person
+    # to accept instead of setting it. Every value here follows a fixed rule, so it is HIGH.
+    entry = {"fieldId": field["id"], "rationale": rationale[:280], "confidence": "HIGH"}
+    if "options" in field:
+        entry["singleSelectOptionId"] = field["options"][value]
+    else:
+        entry["dateValue"] = value
+    return entry
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Fill the org issue fields on open issues.")
+    parser.add_argument("--dry-run", action="store_true", help="print the changes, write nothing")
+    parser.add_argument("--issue", type=int, action="append", help="only write these issues (repeatable)")
+    args = parser.parse_args()
+
+    try:
+        fields = {}
+        for node in gh_graphql(FIELDS_QUERY)["organization"]["issueFields"]["nodes"]:
+            if node and node.get("name") in FIELDS:
+                fields[node["name"]] = node
+                if "options" in node:
+                    node["options"] = {o["name"]: o["id"] for o in node["options"]}
+        missing_fields = [f for f in FIELDS if f not in fields]
+        if missing_fields:
+            raise RuntimeError(f"org issue fields not found: {', '.join(missing_fields)}")
+        nodes, cursor = [], None
+        while True:
+            page = gh_graphql(ISSUES_QUERY, cursor=cursor)["repository"]["issues"]
+            nodes += page["nodes"]
+            if not page["pageInfo"]["hasNextPage"]:
+                break
+            cursor = page["pageInfo"]["endCursor"]
+    except (RuntimeError, json.JSONDecodeError, KeyError, TypeError, subprocess.TimeoutExpired) as err:
+        print(f"issue-fields: cannot read GitHub: {err}", file=sys.stderr)
+        return 2
+
+    issues = {issue.number: issue for issue in map(Issue, nodes) if not issue.labels & SKIP_LABELS}
+    done: set[int] = set()
+    for issue in issues.values():
+        plan(issue, issues, done)
+
+    failed = changed = 0
+    for issue in sorted(issues.values(), key=lambda i: i.number):
+        if args.issue and issue.number not in args.issue:
+            continue
+        updates, notes = [], []
+        for name in FIELDS:
+            if name in issue.human:
+                continue
+            value, rationale = issue.want[name]
+            old = issue.current.get(name)
+            if value == old or (value is None and old is None):
+                continue
+            if name == "Start date" and value is None:
+                continue  # never cleared
+            updates.append(field_input(fields[name], value, rationale))
+            notes.append(f"{name}: {old or '-'} -> {value or '-'}" + (f" ({rationale})" if value else ""))
+        if not updates:
+            continue
+        changed += 1
+        print(f"#{issue.number} {'; '.join(notes)}")
+        if args.dry_run:
+            continue
+        payload = {"query": "mutation($input: SetIssueFieldValueInput!) { setIssueFieldValue(input: $input) "
+                            "{ issue { number } } }",
+                   "variables": {"input": {"issueId": issue.id, "issueFields": updates}}}
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tmp:
+            json.dump(payload, tmp)
+        try:
+            out = subprocess.run([str(BOT_GH), "api", "graphql", "--input", tmp.name],
+                                 capture_output=True, text=True, timeout=120)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+        if out.returncode == 3:
+            print("issue-fields: bot-gh is not configured, nothing written", file=sys.stderr)
+            return 3
+        if out.returncode != 0 or '"errors"' in out.stdout:
+            failed += 1
+            print(f"  FAILED (bot-gh exit {out.returncode}): {(out.stderr or out.stdout).strip()[:300]}")
+        time.sleep(1)  # stay under GitHub's secondary rate limit on mutations
+
+    for issue in sorted(issues.values(), key=lambda i: i.number):
+        if issue.is_epic or "needs-info" in issue.labels:
+            continue
+        if "proposal" in issue.labels and not issue.labels & {"ready", "agent-ready"}:
+            continue
+        lacking = [kind for kind, mapping in (("priority", PRIORITY_LABELS), ("size", SIZE_LABELS))
+                   if not issue.labels & mapping.keys()]
+        if lacking:
+            kinds = ",".join(sorted(issue.labels & {"bug", "enhancement", "documentation", "security",
+                                                    "claude", "triaged", "agent-ready", "ready"})) or "-"
+            print(f"MISSING #{issue.number} {'+'.join(lacking)} [{kinds}] {issue.title}")
+
+    word = "would change" if args.dry_run else "changed"
+    print(f"issue-fields: {len(issues)} open issues, {changed} {word}, {failed} failed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,13 @@
+{
+  "name": "review-fixer",
+  "title": "Review fixer",
+  "description": "4 times a day: on the maintainer's and the routines' open pull requests, fixes what trusted reviewers asked for, pushes commits to the PR branch and replies in every review thread.",
+  "cron": "27 9,13,16,20 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Its commits are authored by the bot app (set bot_app and bot_user_id in harness.json) while the committer stays the repository's git config, which signs them. It never resolves review threads: the pr-review routine counter-reviews its replies. It makes at most 3 rounds of changes for automated reviews per pull request."
+}

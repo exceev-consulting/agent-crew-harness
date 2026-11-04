@@ -1,0 +1,17 @@
+{
+  "name": "pr-metadata",
+  "title": "PR metadata",
+  "description": "Every 3 hours (worker on Claude Sonnet): labels, assignee, review request, milestone and project board status on every open pull request; one comment and one notification when a pull request is ready for the maintainer.",
+  "cron": "37 8-20/3 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Optional: the project board step needs the app's organisation permission Projects (read and write) and a 'Project board:' line in PROFILE.md, Labels; without them it is skipped and reported. Telegram (bin/notify) is optional too: without it only the PushNotification is sent.",
+  "optional": [
+    "org_projects",
+    "telegram"
+  ]
+}

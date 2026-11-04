@@ -1,0 +1,20 @@
+{
+  "project": "demo",
+  "repo": "example-org/demo",
+  "main_clone": "/nonexistent/demo",
+  "home": "/nonexistent",
+  "harness_dir": "/nonexistent/harness",
+  "secrets_dir": "/nonexistent/secrets",
+  "tasks_dir": "/nonexistent/tasks",
+  "task_prefix": "demo-",
+  "maintainer": "demo-maintainer",
+  "co_maintainer": "demo-co-maintainer",
+  "git_author": "Demo Maintainer <demo@example.com>",
+  "bot_app": "demo-claude",
+  "bot_user_id": "1",
+  "review_app": "demo-review",
+  "release_app": "demo-release",
+  "canary": "DEMO-CANARY-0000",
+  "app_process": "claude-desktop",
+  "default_branch": "main"
+}

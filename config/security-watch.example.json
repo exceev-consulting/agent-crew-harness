@@ -1,0 +1,25 @@
+{
+  "min_severity": "medium",
+  "first_run_lookback_days": 30,
+  "overlap_days": 2,
+  "max_candidates": 15,
+  "components": {
+    "GitHub CLI": {"kind": "tool", "notes": "Every helper and routine reads GitHub with gh; bot-gh wraps it with an app token."},
+    "Claude Code": {"kind": "tool", "notes": "Runs every routine. Its skills, plugins and scheduled tasks are the attack surface of an unattended run."},
+    "jq": {"kind": "distro", "notes": "Parses GitHub and feed JSON in the helpers."},
+    "curl": {"kind": "distro", "notes": "Talks to GitHub, Telegram, OSV, NVD and CISA in the helpers."},
+    "OpenSSL": {"kind": "distro", "notes": "bot-gh signs the GitHub App token with openssl."}
+  },
+  "github_advisories": [
+    {"component": "GitHub CLI", "repo": "cli/cli"},
+    {"component": "Claude Code", "repo": "anthropics/claude-code"},
+    {"component": "jq", "repo": "jqlang/jq"},
+    {"component": "curl", "repo": "curl/curl"}
+  ],
+  "osv_ecosystems": ["Debian:12", "Debian:13", "Ubuntu:24.04:LTS"],
+  "osv_max_details": 100,
+  "osv_packages": {"jq": ["jq", "medium"], "curl": ["curl", "high"], "openssl": ["OpenSSL", "high"]},
+  "nvd": [{"component": "GitHub CLI", "keyword": "GitHub CLI"}],
+  "kev": [{"component": "GitHub CLI", "vendor": "GitHub"}],
+  "pins": []
+}

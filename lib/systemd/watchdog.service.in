@@ -1,0 +1,6 @@
+[Unit]
+Description={{project}} routines watchdog (Claude app, sentinel, security watch)
+
+[Service]
+Type=oneshot
+ExecStart={{harness_dir}}/bin/harness-watchdog

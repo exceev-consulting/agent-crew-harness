@@ -1,0 +1,13 @@
+{
+  "name": "bug-fixer",
+  "title": "Bug fixer",
+  "description": "Tuesday and Thursday: proves one triaged bug from the code and opens a small, tested fix pull request for it.",
+  "cron": "7 9 * * 2,4",
+  "enabled_by_default": false,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Opt-in: it writes fixes for issues labelled bug + triaged that have no agent-ready or ready label, so enabling it is the maintainer's standing go-ahead for confirmed bugs. It leaves priority: critical issues to the hotfix lane and agent-ready/ready issues to the issue developer."
+}

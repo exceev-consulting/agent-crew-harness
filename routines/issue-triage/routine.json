@@ -1,0 +1,16 @@
+{
+  "name": "issue-triage",
+  "title": "Issue triage",
+  "description": "Daily: first response, labels and analysis for new issues, milestones for issues without one, and the organisation issue fields on every open issue.",
+  "cron": "7 7 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "issue_fields is optional: without organisation issue fields (Priority, Effort, Start date, Target date), bin/issue-fields exits 2 or 3 and the routine skips that step; triage and milestones still run.",
+  "optional": [
+    "issue_fields"
+  ]
+}

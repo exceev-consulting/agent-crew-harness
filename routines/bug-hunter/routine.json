@@ -1,0 +1,11 @@
+{
+  "name": "bug-hunter",
+  "title": "Bug hunter",
+  "description": "Weekly (Monday): reviews one area of the code (rotation in PROFILE.md, Bug hunting areas) plus last week's commits, and files up to 3 confirmed bugs as issues.",
+  "cron": "7 3 * * 1",
+  "enabled_by_default": true,
+  "requires": ["bot_app"],
+  "skills": ["code-review"],
+  "version": "1.0.0",
+  "notes": "List the review areas in PROFILE.md, Bug hunting areas: the routine picks area (ISO week modulo the number of areas), counting from 0."
+}

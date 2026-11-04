@@ -1,0 +1,11 @@
+{
+  "name": "market-research",
+  "title": "Market research",
+  "description": "Weekly (Wednesday): researches user needs and upstream changes, and opens up to 2 feature proposals.",
+  "cron": "7 3 * * 3",
+  "enabled_by_default": true,
+  "requires": ["bot_app"],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "Uses WebSearch and WebFetch. Fill PROFILE.md, Market research (users, scope, upstream projects, competitors, communities to watch)."
+}

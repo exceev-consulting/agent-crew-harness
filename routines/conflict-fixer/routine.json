@@ -1,0 +1,11 @@
+{
+  "name": "conflict-fixer",
+  "title": "Conflict fixer",
+  "description": "Every 3 hours: on the maintainer's and the routines' open pull requests with merge conflicts, merges the default branch, resolves the conflicts, runs the CI checks and pushes a signed merge commit.",
+  "cron": "17 8-20/3 * * *",
+  "enabled_by_default": true,
+  "requires": ["bot_app"],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "It never rebases or force-pushes, and leaves conflicts in protected paths or incompatible design choices to the maintainer with one comment. PROFILE.md must name the changelog's unreleased section, the generated files and their generator command."
+}

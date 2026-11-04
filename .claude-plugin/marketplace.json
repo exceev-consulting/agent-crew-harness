@@ -1,0 +1,16 @@
+{
+  "name": "agent-harness",
+  "owner": {
+    "name": "Exceev Consulting"
+  },
+  "metadata": {
+    "description": "Routines and skills to let Claude Code maintain a GitHub repository with you."
+  },
+  "plugins": [
+    {
+      "name": "agent-harness",
+      "source": "./",
+      "description": "Claude Code routines that maintain a GitHub repository with you, and the skills to install, profile and check them."
+    }
+  ]
+}

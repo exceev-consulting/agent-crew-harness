@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# bot-setup: save the Claude GitHub App's private key for bot-gh, then test it.
+# The key is written to disk only, never printed.
+#
+# Usage:
+#   bot-setup [--review] <app-id> <downloaded .pem>     key from "Generate a private key" (the downloaded copy is removed)
+#   bot-setup [--review] '<redirect address or code>'   manifest flow (?code=... after "Create GitHub App")
+# --review sets up the reviewer app (review_app in harness.json, used by review-gh) instead of the main app (bot-gh).
+set -euo pipefail
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+repo=$(hconf repo)
+
+dir=$(hconf secrets_dir)
+umask 077
+mkdir -p "$dir"
+
+key=$dir/app.pem env=$dir/bot.env wrapper=bot-gh
+if [[ ${1:-} == --review ]]; then
+    key=$dir/review.pem env=$dir/review-bot.env wrapper=review-gh
+    shift
+fi
+
+save_env() {
+    printf 'APP_ID=%s\nKEY_FILE=%s\n' "$1" "$key" > "$env"
+    chmod 600 "$key" "$env"
+}
+
+if [[ $# -eq 2 ]]; then
+    app_id=$1 pem=$2
+    # GitHub accepts the App ID (a number) or the Client ID (Iv...) as the JWT issuer
+    [[ $app_id =~ ^([0-9]+|Iv[0-9A-Za-z]+)$ ]] || { echo "bot-setup: give the App ID (a number) or the Client ID (Iv...) from the General page of the app" >&2; exit 1; }
+    [[ -r $pem ]] || { echo "bot-setup: cannot read $pem" >&2; exit 1; }
+    grep -q 'BEGIN RSA PRIVATE KEY' "$pem" || { echo "bot-setup: $pem is not a GitHub App private key" >&2; exit 1; }
+    install -m 600 "$pem" "$key"
+    rm -f -- "$pem"
+    save_env "$app_id"
+    echo "Saved the key for app id $app_id in $dir (the downloaded copy was removed)."
+elif [[ $# -eq 1 ]]; then
+    code=$1
+    if [[ $code == *code=* ]]; then
+        code=${code#*code=}
+        code=${code%%&*}
+    fi
+    [[ $code =~ ^[A-Za-z0-9_-]+$ ]] || { echo "bot-setup: that does not look like a GitHub code" >&2; exit 1; }
+    resp=$(curl -fsS -X POST -H "Accept: application/vnd.github+json" \
+        "https://api.github.com/app-manifests/$code/conversions")
+    app_id=$(jq -r .id <<<"$resp")
+    [[ $app_id =~ ^[0-9]+$ ]] || { echo "bot-setup: GitHub did not return an app (code expired or already used?)" >&2; exit 1; }
+    jq -r .pem <<<"$resp" > "$key"
+    save_env "$app_id"
+    echo "Saved the key for app '$(jq -r .slug <<<"$resp")' (id $app_id) in $dir."
+else
+    sed -n '5,8p' "$0" >&2
+    exit 1
+fi
+
+if "$(dirname "$0")/$wrapper" api "repos/$repo" --jq .full_name >/dev/null 2>&1; then
+    echo "Test OK: the app can reach $repo."
+else
+    echo "Key saved, but the app is not installed on $repo yet: on the app page, click Install App," >&2
+    echo "choose ${repo%%/*}, Only select repositories, ${repo#*/}. Then run: $wrapper api repos/$repo --jq .full_name" >&2
+fi

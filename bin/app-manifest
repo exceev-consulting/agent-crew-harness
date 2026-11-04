@@ -1,0 +1,90 @@
+#!/usr/bin/env python3
+"""app-manifest: write a page that creates the harness's GitHub App with the right permissions.
+
+  app-manifest --main [--projects] OUT.html     the app routines post as (bot_app in harness.json)
+  app-manifest --review OUT.html                the reviewer app (review_app): pull request reviews only
+  app-manifest --owner-type user|org ...        skip the lookup of the repository owner's type
+
+Open OUT.html in a browser and click the button: GitHub shows the app filled in. After "Create GitHub App", GitHub
+redirects to the repository with ?code=... in the address: give that address to bin/bot-setup (or bot-setup --review)
+within the hour. Then install the app on the repository only.
+
+Main app permissions: contents read, issues write, pull requests write, repository security advisories write,
+actions write (the CI doctor re-runs failed jobs), metadata read; --projects adds organisation projects write
+(the pr-metadata board step). Reviewer app: contents read, pull requests write.
+"""
+import html
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import harness  # noqa: E402
+
+
+def main(argv):
+    owner_type = None
+    if "--owner-type" in argv:
+        i = argv.index("--owner-type")
+        owner_type = argv[i + 1]
+        del argv[i:i + 2]
+    projects = "--projects" in argv
+    argv = [a for a in argv if a != "--projects"]
+    if len(argv) != 2 or argv[0] not in ("--main", "--review"):
+        print(__doc__, file=sys.stderr)
+        return 2
+    h = harness.load()
+    owner, name = h["repo_owner"], h["repo_name"]
+    if owner_type is None:
+        res = subprocess.run(["gh", "api", f"users/{owner}", "--jq", ".type"], capture_output=True, text=True)
+        owner_type = "org" if res.stdout.strip() == "Organization" else "user"
+    if argv[0] == "--main":
+        app = h["bot_app"]
+        perms = {"contents": "read", "issues": "write", "pull_requests": "write", "repository_advisories": "write",
+                 "actions": "write", "metadata": "read"}
+        if projects:
+            perms["organization_projects"] = "write"
+        what = f"Claude Code routines for {h['repo']}: triage, development of agent-ready issues, fixes. A maintainer merges everything."
+        setup = "bot-setup"
+    else:
+        app = h["review_app"]
+        perms = {"contents": "read", "pull_requests": "write", "metadata": "read"}
+        what = f"Pull request reviews by the Claude Code routines of {h['repo']}."
+        setup = "bot-setup --review"
+    url = f"https://github.com/{h['repo']}"
+    manifest = {"name": app, "url": url, "description": what, "hook_attributes": {"url": url, "active": False},
+                "redirect_url": url, "public": False, "default_permissions": perms, "default_events": []}
+    action = (f"https://github.com/organizations/{owner}/settings/apps/new" if owner_type == "org"
+              else "https://github.com/settings/apps/new")
+    rows = "".join(f"<li><code>{html.escape(k)}</code>: {html.escape(v)}</li>" for k, v in perms.items())
+    page = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Create {html.escape(app)}</title>
+<style>
+:root {{ --bg:#fff; --fg:#1f2328; --muted:#59636e; --accent:#1f883d; --card:#f6f8fa; }}
+@media (prefers-color-scheme: dark) {{ :root {{ --bg:#0d1117; --fg:#e6edf3; --muted:#9198a1; --accent:#238636; --card:#161b22; }} }}
+body {{ background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,sans-serif; margin:0; padding:32px 16px; }}
+main {{ max-width:640px; margin:0 auto; }} .card {{ background:var(--card); border-radius:8px; padding:16px 20px; margin:16px 0; }}
+button {{ background:var(--accent); color:#fff; border:0; border-radius:6px; padding:10px 18px; font-size:16px; cursor:pointer; }}
+.muted {{ color:var(--muted); font-size:14px; }} code {{ font-family:ui-monospace,monospace; font-size:14px; }}
+</style></head><body><main>
+<h1>Create the GitHub App <code>{html.escape(app)}</code></h1>
+<p>For <strong>{html.escape(h['repo'])}</strong>. Posts will show as <code>{html.escape(app)}[bot]</code>.</p>
+<div class="card"><p>Permissions:</p><ul>{rows}</ul><p class="muted">No webhook, private to {html.escape(owner)}.</p></div>
+<form action="{html.escape(action)}" method="post">
+<input type="hidden" name="manifest" value="{html.escape(json.dumps(manifest))}">
+<button type="submit">Continue to GitHub</button></form>
+<p class="muted">On GitHub, click <strong>Create GitHub App</strong>. GitHub then opens {html.escape(url)} with
+<code>?code=…</code> in the address bar. Within the hour, run
+<code>{html.escape(h['harness_dir'])}/bin/{setup} '&lt;that address&gt;'</code>. Then install the app on
+<strong>{html.escape(name)}</strong> only (Install App, Only select repositories).</p>
+</main></body></html>
+"""
+    Path(argv[1]).write_text(page)
+    print(f"wrote {argv[1]}: open it in a browser")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

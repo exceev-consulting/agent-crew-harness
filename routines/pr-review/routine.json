@@ -1,0 +1,17 @@
+{
+  "name": "pr-review",
+  "title": "PR review",
+  "description": "4 times a day: code and security review of every open pull request by Claude Fable, counter-review of the replies in its threads, and resolution of its own fixed outdated threads.",
+  "cron": "7 11,15,18,22 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "bot_app",
+    "review_app"
+  ],
+  "skills": [
+    "code-review",
+    "security-review"
+  ],
+  "version": "1.0.0",
+  "notes": "Reviews are posted by the reviewer app (review_app) so they can approve pull requests opened by bot_app. The review runs in a subagent on the Fable model and outdated threads are checked by a Sonnet subagent: both models must be available to the account. PROFILE.md must fill Code review checklist, Security review checklist and the static checks for pull request files in Safe commands."
+}

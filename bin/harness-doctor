@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# harness-doctor: check the routines harness in one go, like an audit. Read-only, no secret is printed.
+#   PASS / WARN / FAIL lines, exit 1 when a FAIL is found.
+# Checks: settings, secrets present (not read), private-data guard, templates in sync with the installed
+# prompts, the helper tests, Telegram, the watchdog timer, and how fresh the sentinel and security watch are.
+set -uo pipefail
+R=$(cd "$(dirname "$0")/.." && pwd)
+# shellcheck source=../lib/harness.sh
+. "$R/lib/harness.sh"
+fails=0 warns=0
+pass() { printf 'PASS  %s\n' "$1"; }
+warn() { printf 'WARN  %s\n' "$1"; warns=$((warns + 1)); }
+fail() { printf 'FAIL  %s\n' "$1"; fails=$((fails + 1)); }
+
+# 1. settings
+missing=""
+for k in repo main_clone harness_dir secrets_dir tasks_dir task_prefix maintainer bot_app review_app canary; do
+    hconf "$k" >/dev/null 2>&1 || missing+=" $k"
+done
+[[ -z $missing ]] && pass "harness.json has every key" || fail "harness.json lacks:$missing"
+[[ $(hconf harness_dir 2>/dev/null) == "$R" ]] && pass "harness_dir is this folder" || fail "harness_dir in harness.json is not $R"
+[[ -d $(hconf main_clone 2>/dev/null)/.git ]] && pass "main clone found" || fail "main_clone is not a git clone"
+
+# 2. secrets: present and private, never read
+sec=$(hconf secrets_dir 2>/dev/null)
+for f in bot.env review-bot.env private-patterns.txt telegram.env; do
+    if [[ ! -e $sec/$f ]]; then
+        [[ $f == telegram.env ]] && warn "Telegram not set up (bin/notify --setup)" || fail "secret file $f missing in the secrets folder"
+    elif [[ $(stat -c %a "$sec/$f") != 600 && $(stat -c %a "$sec/$f") != 400 ]]; then
+        fail "$f is readable by others (chmod 600 it)"
+    else
+        pass "$f present and private"
+    fi
+done
+echo "$(hconf canary)" | "$R/bin/scan-private" >/dev/null 2>&1
+[[ $? == 4 ]] && pass "private-data guard blocks its canary" || fail "private-data guard is broken (scan-private does not block the canary)"
+
+# 3. templates and versions (from the harness repository the install came from)
+hrepo=$(hconf harness_repo 2>/dev/null || true)
+if [[ -n $hrepo && -x $hrepo/bin/harness-render ]]; then
+    if out=$(HARNESS_CONFIG="$HARNESS_CONFIG" "$hrepo/bin/harness-render" --check 2>&1); then pass "installed prompts match the templates"
+    else fail "installed prompts differ from the templates: $(grep -m1 -E '^(drift|missing)' <<<"$out")"; fi
+    behind=$(HARNESS_CONFIG="$HARNESS_CONFIG" "$hrepo/bin/harness-render" --status 2>/dev/null | grep -c 'update ' || true)
+    (( behind == 0 )) && pass "routine versions up to date" || warn "$behind routine(s) behind the harness repository (harness-install, update)"
+    # 4. tests of the helpers, in the repository
+    for t in "$hrepo"/tests/*.sh; do
+        if bash "$t" >/dev/null 2>&1; then pass "tests/$(basename "$t")"; else fail "tests/$(basename "$t") fails: bash $t"; fi
+    done
+else
+    warn "harness_repo is not set in harness.json: cannot compare the install with the templates or run the tests"
+fi
+
+# 5. watchdog outside Claude
+timer="$(hconf task_prefix)watchdog.timer"
+if systemctl --user is-active --quiet "$timer" 2>/dev/null; then pass "watchdog timer active ($timer)"
+else fail "watchdog timer not active (systemctl --user enable --now $timer)"; fi
+[[ $(loginctl show-user "$USER" -p Linger --value 2>/dev/null) == yes ]] && pass "linger on (timer runs while logged out)" \
+    || warn "linger off: the watchdog stops when you log out (loginctl enable-linger)"
+pgrep -x "$(hconf app_process 2>/dev/null || echo claude-desktop)" >/dev/null && pass "Claude app running" || fail "Claude app not running: no routine runs"
+
+# 6. freshness
+age_min() { local t; t=$(date -d "$1" +%s 2>/dev/null) || return 1; echo $(( ($(date +%s) - t) / 60 )); }
+plan=$R/state/sentinel-plan.json
+if [[ -s $plan ]]; then
+    a=$(age_min "$(jq -r .generated "$plan")") && { (( a <= 75 )) && pass "sentinel ran $a min ago" || warn "sentinel last ran $a min ago"; }
+else warn "sentinel has not run yet"; fi
+sw=$R/state/security-watch.json
+if [[ -s $sw ]]; then
+    a=$(age_min "$(jq -r '.since.github // empty' "$sw")") && { (( a <= 300 )) && pass "security watch read advisories $a min ago" || warn "security watch last read advisories $a min ago"; }
+else warn "security watch has not run yet"; fi
+n=$(find "$R/locks" -maxdepth 1 -name '*.lock' -mmin +720 2>/dev/null | wc -l)
+(( n == 0 )) && pass "no stale lock" || warn "$n lock(s) older than 12 h in locks/"
+
+printf '\n%d FAIL, %d WARN\n' "$fails" "$warns"
+(( fails == 0 ))

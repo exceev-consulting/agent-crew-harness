@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# review-gh: bot-gh as the reviewer app (review_app in harness.json), for the pr-review routine:
+# reviews, approvals, thread replies and resolving. A PR opened by the main app (bot_app) cannot be
+# approved by that same app, so reviews come from this second app.
+# Exit 3 = the reviewer app is not set up yet (run: bot-setup --review ...).
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+secrets=$(hconf secrets_dir) || exit 3
+exec env HARNESS_BOT_CONF="$secrets/review-bot.env" "$(dirname "$0")/bot-gh" "$@"

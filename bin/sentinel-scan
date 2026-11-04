@@ -1,0 +1,426 @@
+#!/usr/bin/env python3
+"""sentinel-scan: decide what the hotfix sentinel routine must tell the maintainers and start.
+
+  sentinel-scan --need-runs TASKS.json           task ids whose recent runs must be fetched, one per line
+  sentinel-scan --tasks TASKS.json --runs DIR    scan; print the plan (JSON) and save it to state/sentinel-plan.json
+  sentinel-scan --ack KEY [KEY...]               mark these events as delivered (never sent again)
+  sentinel-scan --triggered TASK [TASK...]       record that these routines were started now (cooldown)
+  sentinel-scan --gate develop|review            exit 0 and print the reasons when critical work waits for the
+                                                 hotfix developer or reviewer, exit 1 when none (no state written)
+
+TASKS.json is the output of list_scheduled_tasks; DIR holds runs-<taskId>.json files (list_task_runs).
+GitHub is read with the maintainer's plain `gh`, read-only. Nothing is posted by this script.
+Settings: sentinel.json next to bin/. State: state/sentinel.json. Exit 0 = ok, 1 = error (state unchanged).
+
+The plan:
+  messages   one per group, each {keys, level (critical|warn|info), title, text}: send each with bin/notify,
+             then --ack its keys
+  push       one line for the desktop notification, or null when nothing is critical
+  run_tasks  [{taskId, reason}]: critical work waiting for a routine. Unattended runs cannot start routines,
+             so the hotfix developer and hotfix review routines take it (they ask --gate); report only
+  issues     [{key, title, labels, body_file}]: create each with bot-gh, then --ack its key
+"""
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+R = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(R / "lib"))
+import harness  # noqa: E402
+CONF = json.loads(Path(os.environ.get("HARNESS_SENTINEL_CONF") or R / "sentinel.json").read_text())
+_H = harness.load()
+CONF.setdefault("repo", _H["repo"])
+CONF.setdefault("review_authors", [_H["review_login"], _H["bot_login"]])
+CONF.setdefault("task_prefix", _H["task_prefix"])
+PROJECT = _H["project"]
+for _k in ("trigger_develop", "trigger_review"):   # routine names: the task id is task_prefix + name
+    if not CONF[_k].startswith(CONF["task_prefix"]):
+        CONF[_k] = CONF["task_prefix"] + CONF[_k]
+STATE_FILE = R / "state" / "sentinel.json"
+PLAN_FILE = R / "state" / "sentinel-plan.json"
+LOCKS = R / "locks"
+TMP = R / "tmp"
+REPO = CONF["repo"]
+OWNER, NAME = REPO.split("/")
+NOW = datetime.now(timezone.utc)
+# Tests replace GitHub with JSON files named after each query; never used outside test mode.
+FAKE = os.environ.get("HARNESS_SENTINEL_FAKE") if os.environ.get("HARNESS_TEST") == "1" else None
+if os.environ.get("HARNESS_TEST") == "1" and os.environ.get("HARNESS_SENTINEL_STATE"):
+    STATE_FILE = Path(os.environ["HARNESS_SENTINEL_STATE"]) / "sentinel.json"
+    PLAN_FILE = Path(os.environ["HARNESS_SENTINEL_STATE"]) / "sentinel-plan.json"
+    LOCKS = Path(os.environ["HARNESS_SENTINEL_STATE"]) / "locks"
+    TMP = Path(os.environ["HARNESS_SENTINEL_STATE"]) / "tmp"
+if FAKE and os.environ.get("HARNESS_SENTINEL_NOW"):
+    NOW = datetime.fromisoformat(os.environ["HARNESS_SENTINEL_NOW"].replace("Z", "+00:00"))
+
+LEVELS = {"info": 0, "warn": 1, "critical": 2}
+GROUPS = [  # order and title of the Telegram messages
+    ("security", "Security advisory"),
+    ("critical", "Critical issue"),
+    ("review", "Critical fix review"),
+    ("main", "main is red"),
+    ("release", "Release waiting"),
+    ("routines", "Routine health"),
+]
+
+
+def ts(s):
+    """ISO time from GitHub or the app -> aware datetime (None when missing)."""
+    if not s:
+        return None
+    return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+
+
+def gh(name, args, lines=False):
+    """Run plain gh (read-only) and parse JSON. In test mode read <FAKE>/<name>.json instead."""
+    if FAKE:
+        p = Path(FAKE) / f"{name}.json"
+        if not p.exists():
+            return [] if lines else None
+        text = p.read_text()
+    else:
+        res = subprocess.run(["gh", *args], capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            if "404" in res.stderr or "Not Found" in res.stderr:
+                return [] if lines else None
+            raise RuntimeError(f"gh {' '.join(args[:3])}: {res.stderr.strip()[:300]}")
+        text = res.stdout
+    if lines:
+        return [json.loads(x) for x in text.splitlines() if x.strip()]
+    return json.loads(text) if text.strip() else None
+
+
+def load_state():
+    if STATE_FILE.exists():
+        st = json.loads(STATE_FILE.read_text())
+    else:
+        st = {}
+    st.setdefault("acked", {})
+    st.setdefault("tasks", {})
+    st.setdefault("triggers", {})
+    return st
+
+
+def save_json(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+def labels_of(node):
+    return {x["name"] for x in (node.get("labels") or {}).get("nodes", [])} if isinstance(node.get("labels"), dict) \
+        else {x["name"] for x in node.get("labels") or []}
+
+
+def is_critical_pr(pr):
+    if CONF["critical_label"] in labels_of(pr):
+        return True
+    if any(pr["headRefName"].startswith(p) for p in CONF["hotfix_branch_prefixes"]):
+        return True
+    for issue in (pr.get("closingIssuesReferences") or {}).get("nodes", []):
+        if CONF["critical_label"] in labels_of(issue):
+            return True
+    return False
+
+
+def short(text, n=90):
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+# ---------------------------------------------------------------------------------------------
+def need_runs(tasks_file):
+    st = load_state()
+    for t in json.loads(Path(tasks_file).read_text()):
+        tid = t["taskId"]
+        if not tid.startswith(CONF["task_prefix"]):
+            continue
+        known = st["tasks"].get(tid)
+        if known is None or known.get("lastRunAt") != t.get("lastRunAt") or known.get("last_status") == "running":
+            print(tid)
+
+
+def scan(tasks_file, runs_dir, gate=None):
+    st = load_state()
+    acked = st["acked"]
+    events = []  # {key, group, level, line}
+
+    def event(key, group, level, line):
+        if key not in acked:
+            events.append({"key": key, "group": group, "level": level, "line": line})
+
+    # --- GitHub reads -------------------------------------------------------------------------
+    crit = gh("crit_issues", ["issue", "list", "-R", REPO, "--state", "open", "--label", CONF["critical_label"],
+                              "--limit", "100", "--json", "number,title,url,labels,body,author"]) or []
+    trusted = {_H.get("maintainer"), _H.get("co_maintainer"), _H["bot_app"], f"app/{_H['bot_app']}", _H["bot_login"]} - {None}
+    pr_fields = ("number title url headRefName headRefOid isDraft mergedAt labels(first:30){nodes{name}} "
+                 "closingIssuesReferences(first:10){nodes{number labels(first:30){nodes{name}}}}")
+    q_open = f'{{repository(owner:"{OWNER}",name:"{NAME}"){{pullRequests(states:OPEN,first:100){{nodes{{{pr_fields}}}}}}}}}'
+    q_merged = (f'{{repository(owner:"{OWNER}",name:"{NAME}"){{pullRequests(states:MERGED,last:40,'
+                f'orderBy:{{field:UPDATED_AT,direction:ASC}}){{nodes{{{pr_fields}}}}}}}}}')
+    prs_open = (gh("prs_open", ["api", "graphql", "-f", f"query={q_open}"]) or {}) \
+        .get("data", {}).get("repository", {}).get("pullRequests", {}).get("nodes", [])
+    prs_merged = (gh("prs_merged", ["api", "graphql", "-f", f"query={q_merged}"]) or {}) \
+        .get("data", {}).get("repository", {}).get("pullRequests", {}).get("nodes", [])
+    release = gh("release", ["api", f"repos/{REPO}/releases/latest"]) or {}
+    advisories = []
+    for state in ("draft", "triage"):
+        advisories += gh(f"advisories_{state}", ["api", f"repos/{REPO}/security-advisories?state={state}&per_page=100"]) or []
+
+    # --- 1. critical issues -------------------------------------------------------------------
+    covered = set()
+    for pr in prs_open:
+        for issue in (pr.get("closingIssuesReferences") or {}).get("nodes", []):
+            covered.add(issue["number"])
+        m = re.match(r"^(?:claude/)?(?:fix|feat|docs|hotfix)[-/](\d+)-", pr["headRefName"])
+        if m:
+            covered.add(int(m.group(1)))
+    develop_reasons = []
+    for issue in crit:
+        n, title, url = issue["number"], short(issue["title"]), issue["url"]
+        go = bool(set(CONF["go_labels"]) & labels_of(issue))
+        if f"crit-issue:{n}" not in acked:
+            state_line = "agent-ready is on: the hotfix developer starts within 30 minutes." if go else "Add agent-ready when it is confirmed: the hotfix developer then starts within 30 minutes."
+            events.append({"key": f"crit-issue:{n}", "group": "critical", "level": "critical",
+                           "line": f"#{n} {title}\n{url}\n{state_line}", "also": [f"crit-go:{n}"] if go else []})
+        elif go:
+            event(f"crit-go:{n}", "critical", "info", f"#{n}: agent-ready is on, the hotfix developer starts within 30 minutes. {url}")
+        failed = LOCKS / f"issue-{n}.failed"
+        recent_fail = False
+        if failed.exists():
+            for line in failed.read_text().splitlines():
+                parts = line.split(" ", 2)
+                when = ts(parts[0]) if parts and re.match(r"^\d{4}-", parts[0]) else None
+                if not when or NOW - when > timedelta(days=7):
+                    continue
+                if NOW - when < timedelta(hours=24):
+                    recent_fail = True
+                h = hashlib.sha1(line.encode()).hexdigest()[:10]
+                kind = parts[1] if len(parts) > 1 else "?"
+                reason = short(parts[2], 140) if len(parts) > 2 else ""
+                event(f"crit-fail:{n}:{h}", "critical", "warn",
+                      f"#{n}: the developer stopped ({kind}: {reason}). See its run in the Claude app.")
+        lock_live = (LOCKS / f"issue-{n}.lock").is_dir()
+        author = (issue.get("author") or {}).get("login")
+        # same trust rule as the issue developer: a maintainer or the app wrote it (authorAssociation is not
+        # available here, so other members wait for the developer's own check at its next regular run)
+        if go and n not in covered and not lock_live and not recent_fail and (author is None or author in trusted):
+            develop_reasons.append(f"#{n}")
+
+    if gate == "develop":
+        print("\n".join(develop_reasons))
+        return 0 if develop_reasons else 1
+
+    # --- 2. security advisories (never the summary: details stay on GitHub) --------------------
+    for adv in advisories:
+        ghsa = adv.get("ghsa_id")
+        if ghsa:
+            event(f"advisory:{ghsa}", "security", "critical",
+                  f"{ghsa} ({adv.get('severity') or 'no severity'}, {adv.get('state')}): {adv.get('html_url')}")
+
+    # --- 3. open pull requests: do-not-merge verdicts and critical fixes -----------------------
+    review_reasons = []
+    for pr in prs_open:
+        n, head, title, url = pr["number"], pr["headRefOid"], short(pr["title"]), pr["url"]
+        if CONF["do_not_merge_label"] in labels_of(pr):
+            event(f"dnm:{n}:{head[:12]}", "review", "critical", f"#{n} {title}: Claude's review says do not merge.\n{url}")
+        if pr.get("isDraft") or not is_critical_pr(pr):
+            continue
+        reviews = gh(f"reviews_{n}", ["api", "--paginate", f"repos/{REPO}/pulls/{n}/reviews",
+                                       "--jq", ".[] | {user: .user.login, body: .body}"], lines=True)
+        verdict = None
+        for r in reviews:
+            if r.get("user") in CONF["review_authors"] and f"{CONF['review_marker']}{head}" in (r.get("body") or ""):
+                m = re.search(r"Verdict:\s*(✅|⚠️|⛔)", r["body"])
+                verdict = m.group(1) if m else "?"
+        if verdict is None:
+            review_reasons.append(f"#{n}")
+        elif verdict == "✅":
+            event(f"crit-pr-ok:{n}:{head[:12]}", "review", "critical",
+                  f"Critical fix #{n} {title} passed Claude's review. Review and merge it:\n{url}")
+        elif verdict == "⚠️":
+            event(f"crit-pr-changes:{n}:{head[:12]}", "review", "info",
+                  f"Critical fix #{n}: Claude's review suggests changes; the review fixer takes them at its next run. {url}")
+        elif verdict == "⛔":
+            event(f"dnm:{n}:{head[:12]}", "review", "critical", f"Critical fix #{n} {title}: Claude's review says do not merge.\n{url}")
+
+    if gate == "review":
+        print("\n".join(review_reasons))
+        return 0 if review_reasons else 1
+
+    # --- 4. main is red -----------------------------------------------------------------------
+    issues = []
+    open_markers = "\n".join((i.get("body") or "") for i in crit)
+    for wf, threshold in CONF["main_workflows"].items():
+        runs = gh(f"runs_{wf}", ["run", "list", "-R", REPO, "--branch", CONF["main_branch"], "--workflow", wf,
+                                 "--limit", "10", "--json", "databaseId,status,conclusion,event,url,createdAt"]) or []
+        runs = [r for r in runs if r.get("status") == "completed" and r.get("event") in ("push", "schedule", "workflow_dispatch")
+                and r.get("conclusion") not in ("cancelled", "skipped")]
+        runs.sort(key=lambda r: r["createdAt"], reverse=True)
+        streak = []
+        for r in runs:
+            if r.get("conclusion") in ("failure", "timed_out", "startup_failure"):
+                streak.append(r)
+            else:
+                break
+        if not streak:
+            continue
+        latest, first = streak[0], streak[-1]
+        level = "critical" if len(streak) >= threshold else "warn"
+        event(f"main-red:{wf}:{latest['databaseId']}", "main", level,
+              f"{wf} failed on main ({len(streak)} in a row): {latest['url']}")
+        marker = f"<!-- sentinel main-red workflow={wf} -->"
+        key = f"main-red-issue:{wf}:{first['databaseId']}"
+        if len(streak) >= threshold and marker not in open_markers and key not in acked:
+            TMP.mkdir(parents=True, exist_ok=True)
+            body_file = TMP / f"sentinel-issue-{re.sub(r'[^a-z0-9]+', '-', wf)}.md"
+            runs_md = "\n".join(f"- {r['createdAt'][:16].replace('T', ' ')} UTC: {r['url']}" for r in streak[:5])
+            body_file.write_text(
+                f"`{wf}` fails on `{CONF['main_branch']}`: {len(streak)} completed run(s) in a row.\n\n{runs_md}\n\n"
+                "Nothing new can be released safely while this is red. A maintainer confirms the cause, then adds "
+                "`agent-ready` to let the Claude routines fix it first (hotfix lane, ADR 0003).\n\n"
+                f"{marker}\n<sub>🤖 Automated by Claude Code (sentinel routine). A maintainer reviews before anything is merged.</sub>\n")
+            issues.append({"key": key, "title": f"{wf}: fails on {CONF['main_branch']} since {first['createdAt'][:10]}",
+                           "labels": CONF["main_red_issue_labels"], "body_file": str(body_file)})
+
+    # --- 5. merged critical fixes waiting for a release ----------------------------------------
+    released_at = ts(release.get("published_at")) if release else None
+    for pr in prs_merged:
+        merged = ts(pr.get("mergedAt"))
+        if not merged or (released_at and merged <= released_at) or not is_critical_pr(pr):
+            continue
+        n, title = pr["number"], short(pr["title"])
+        text = f"Fix #{n} {title} is merged but not released. Release it:\n{CONF['release_command']}"
+        if f"release-due:{n}" not in acked:
+            event(f"release-due:{n}", "release", "critical", text)
+        elif NOW - merged > timedelta(hours=CONF["release_reminder_hours"]):
+            event(f"release-due-again:{n}", "release", "warn", "Still waiting. " + text)
+
+    # --- 6. routine health --------------------------------------------------------------------
+    tasks = json.loads(Path(tasks_file).read_text()) if tasks_file else []
+    for t in tasks:
+        tid = t["taskId"]
+        if not tid.startswith(CONF["task_prefix"]):
+            continue
+        name = t.get("title") or tid
+        nxt = ts(t.get("nextRunAt"))
+        if t.get("enabled") and nxt and NOW - nxt > timedelta(minutes=CONF["late_after_min"]):
+            event(f"task-late:{tid}:{t.get('nextRunAt')}", "routines", "warn",
+                  f"{name} has not started since {nxt:%Y-%m-%d %H:%M} UTC. Is the Claude app open, or a run stuck on a prompt?")
+        runs_file = Path(runs_dir) / f"runs-{tid}.json" if runs_dir else None
+        runs = []
+        if runs_file and runs_file.exists():
+            data = json.loads(runs_file.read_text())
+            runs = data.get("runs", []) if isinstance(data, dict) else data
+        for run in runs:
+            started = ts(run.get("started_at"))
+            sid = run.get("session_id", "?")
+            if run.get("status") == "failed" and started and NOW - started < timedelta(hours=CONF["run_failed_window_hours"]):
+                why = short(run.get("error") or run.get("summary") or "no error text", 160)
+                event(f"run-failed:{sid}", "routines", "warn", f"{name} failed at {started:%H:%M} UTC: {why}")
+            text = f"{run.get('summary') or ''} {run.get('error') or ''}"
+            if run.get("status") == "succeeded" and started and NOW - started < timedelta(hours=CONF["run_failed_window_hours"]):
+                hit = next((pat for pat in CONF.get("summary_alerts", []) if re.search(pat, text, re.I)), None)
+                if hit:
+                    event(f"run-alert:{sid}", "routines", "warn",
+                          f"{name} finished but reports a problem ({hit}): {short(run.get('summary'), 160)}")
+            if run.get("status") == "running" and started and NOW - started > timedelta(minutes=CONF["hung_after_min"]):
+                hours = (NOW - started).total_seconds() / 3600
+                event(f"run-hung:{sid}", "routines", "warn",
+                      f"{name} has been running for {hours:.1f} h. It may wait on a permission prompt: open it in the Claude app.")
+        known = st["tasks"].setdefault(tid, {})
+        known["lastRunAt"] = t.get("lastRunAt")
+        if runs:
+            known["last_status"] = runs[0].get("status")
+        known["enabled"] = bool(t.get("enabled"))
+    if LOCKS.is_dir():
+        for lock in LOCKS.glob("*.lock"):
+            age = time.time() - lock.stat().st_mtime
+            if lock.is_dir() and age > CONF["stale_lock_hours"] * 3600:
+                event(f"stale-lock:{lock.name}:{int(lock.stat().st_mtime)}", "routines", "warn",
+                      f"Lock {lock.name} is {age / 3600:.0f} h old: a run died holding it. The next run of its routine clears it.")
+
+    # --- 7. routines to start now -------------------------------------------------------------
+    run_tasks = []
+
+    def want(task_id, reason):
+        known = st["tasks"].get(task_id, {})
+        last = ts(st["triggers"].get(task_id))
+        if known.get("enabled") is False or known.get("last_status") == "running":
+            return
+        if last and NOW - last < timedelta(minutes=CONF["trigger_cooldown_min"]):
+            return
+        run_tasks.append({"taskId": task_id, "reason": reason})
+
+    if develop_reasons:
+        want(CONF["trigger_develop"], "critical issue ready, no PR yet: " + ", ".join(develop_reasons))
+    if review_reasons:
+        want(CONF["trigger_review"], "critical PR without a review at its head: " + ", ".join(review_reasons))
+
+    # --- plan ---------------------------------------------------------------------------------
+    messages = []
+    for group, title in GROUPS:
+        evs = [e for e in events if e["group"] == group]
+        if not evs:
+            continue
+        level = max((e["level"] for e in evs), key=LEVELS.get)
+        keys = [k for e in evs for k in [e["key"], *e.get("also", [])]]
+        head = {"security": "New security advisory draft(s). Decide for each: public fix under a neutral title, "
+                            "or private fix in its temporary fork. Details stay on GitHub.",
+                "critical": None, "review": None, "main": None, "release": None, "routines": None}[group]
+        body = "\n\n".join(e["line"] for e in evs)
+        messages.append({"keys": keys, "level": level, "title": f"{'🚨' if level == 'critical' else '⚠️' if level == 'warn' else 'ℹ️'} {PROJECT}: {title}",
+                         "text": f"{head}\n\n{body}" if head else body})
+    crit_msgs = [m for m in messages if m["level"] == "critical"]
+    push = None
+    if crit_msgs:
+        parts = [m["title"].split(": ", 1)[1] for m in crit_msgs]
+        push = short(f"{PROJECT} needs you: " + "; ".join(parts) + ". Details on Telegram and GitHub.", 195)
+    plan = {"generated": NOW.isoformat(timespec="seconds"), "messages": messages, "push": push,
+            "run_tasks": run_tasks, "issues": issues}
+    save_json(STATE_FILE, st)
+    save_json(PLAN_FILE, plan)
+    print(json.dumps(plan, indent=1, ensure_ascii=False))
+
+
+def mark(section, items):
+    st = load_state()
+    for k in items:
+        st[section][k] = NOW.isoformat(timespec="seconds")
+    cutoff = NOW - timedelta(days=90)
+    st["acked"] = {k: v for k, v in st["acked"].items() if ts(v) and ts(v) > cutoff}
+    save_json(STATE_FILE, st)
+    print(f"{section}: {len(items)} recorded")
+
+
+def main(argv):
+    try:
+        if len(argv) >= 2 and argv[0] == "--need-runs":
+            need_runs(argv[1])
+        elif argv and argv[0] == "--ack":
+            mark("acked", argv[1:])
+        elif argv and argv[0] == "--triggered":
+            mark("triggers", argv[1:])
+        elif len(argv) >= 2 and argv[0] == "--gate" and argv[1] in ("develop", "review"):
+            return scan(None, None, gate=argv[1])
+        elif argv and argv[0] == "--tasks":
+            runs_dir = argv[3] if len(argv) >= 4 and argv[2] == "--runs" else None
+            scan(argv[1], runs_dir)
+        else:
+            print(__doc__, file=sys.stderr)
+            return 2
+    except Exception as e:  # report and leave the state as it was
+        print(f"sentinel-scan: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

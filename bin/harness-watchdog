@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# harness-watchdog: the check that runs OUTSIDE Claude (systemd user timer), so it still works when the
+# Claude app is closed, asleep or stuck and every routine has stopped. It sends a Telegram message
+# (bin/notify) when:
+#   app       the Claude desktop app is not running (no routine can run)
+#   sentinel  the sentinel routine's last plan is older than 75 minutes during its hours (07:45-23:59)
+#   secwatch  the security watch has not read GitHub advisories for 5 hours (it runs every 2 hours)
+# Once per problem, again after 6 hours if it lasts, and one "back to normal" message when it ends.
+# Before a routine's first run (no state file yet) its check is skipped.
+# State: state/watchdog.json. Exit 0 always unless the script itself breaks.
+set -uo pipefail
+# shellcheck source=../lib/harness.sh
+. "$(dirname "$0")/../lib/harness.sh"
+project=$(hconf project 2>/dev/null || echo harness)
+app_process=$(hconf app_process 2>/dev/null || echo claude-desktop)
+
+R=$(cd "$(dirname "$0")/.." && pwd)
+state_dir=$R/state
+notify=$R/bin/notify
+now=$(date +%s)
+app_up() { pgrep -x "$app_process" >/dev/null; }
+if [[ ${HARNESS_TEST:-} == 1 ]]; then   # tests replace the clock, the app check, the sender and the state
+    now=${WATCHDOG_NOW:-$now}
+    [[ -n ${WATCHDOG_APP:-} ]] && app_up() { [[ $WATCHDOG_APP == up ]]; }
+    notify=${WATCHDOG_NOTIFY:-$notify}
+    state_dir=${WATCHDOG_STATE:-$state_dir}
+fi
+st=$state_dir/watchdog.json
+mkdir -p "$state_dir"
+[[ -s $st ]] || echo '{}' > "$st"
+hour=$((10#$(date -d "@$now" +%H))) minute=$((10#$(date -d "@$now" +%M)))
+
+epoch() { [[ -n ${1:-} && $1 != null ]] && date -d "$1" +%s 2>/dev/null; }
+
+declare -A fail=() why=()
+# 1. the app
+if ! app_up; then
+    fail[app]=1; why[app]="The Claude desktop app is not running, so no $project routine runs (sentinel, developer, reviews). Open the app on the server."
+fi
+# 2. the sentinel, during its hours only (cron */30 7-23, plus margin for its jitter)
+plan=$state_dir/sentinel-plan.json
+if [[ -s $plan ]] && (( hour * 60 + minute >= 7 * 60 + 45 )); then
+    gen=$(epoch "$(jq -r '.generated // empty' "$plan" 2>/dev/null)")
+    if [[ -n $gen ]] && (( now - gen > 75 * 60 )); then
+        fail[sentinel]=1
+        why[sentinel]="The sentinel has not run for $(( (now - gen) / 60 )) minutes. Check the app: asleep, a usage limit, or a run stuck on a permission prompt."
+    fi
+fi
+# 3. the security watch (every 2 hours)
+sw=$state_dir/security-watch.json
+if [[ -s $sw ]]; then
+    last=$(epoch "$(jq -r '.since.github // empty' "$sw" 2>/dev/null)")
+    if [[ -n $last ]] && (( now - last > 5 * 3600 )); then
+        fail[secwatch]=1
+        why[secwatch]="The security watch has not read the GitHub advisories for $(( (now - last) / 3600 )) hours."
+    fi
+fi
+
+send() {   # send TEXT: through bin/notify; exit 3 (Telegram not set up) is fine
+    "$notify" --title "🐶 $project: watchdog" "$1" >/dev/null 2>&1
+    local rc=$?
+    [[ $rc == 0 || $rc == 3 ]]
+}
+
+new_state=$(cat "$st")
+for check in app sentinel secwatch; do
+    alerted=$(jq -r --arg c "$check" '.[$c].alerted // empty' <<<"$new_state")
+    if [[ -n ${fail[$check]:-} ]]; then
+        if [[ -z $alerted ]] || (( now - alerted > 6 * 3600 )); then
+            if send "${why[$check]}"; then
+                new_state=$(jq --arg c "$check" --argjson t "$now" '.[$c].alerted = $t' <<<"$new_state")
+            fi
+        fi
+    elif [[ -n $alerted ]]; then
+        if send "Back to normal: $check."; then
+            new_state=$(jq --arg c "$check" 'del(.[$c])' <<<"$new_state")
+        fi
+    fi
+done
+printf '%s\n' "$new_state" > "$st.tmp" && mv "$st.tmp" "$st"
+exit 0
