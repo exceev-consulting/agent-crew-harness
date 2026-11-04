@@ -22,7 +22,7 @@ jobs:
 
       - name: Shell files
         run: |
-          mapfile -t sh < <(grep -lE '^#!/usr/bin/env bash' bin/* tests/*.sh lib/*.sh 2>/dev/null; ls lib/harness.sh)
+          mapfile -t sh < <(grep -lE '^#!/usr/bin/env bash' bin/* tests/*.sh lib/*.sh status-board/build.sh 2>/dev/null; ls lib/harness.sh)
           for f in "${sh[@]}"; do bash -n "$f"; done
           shellcheck --version | sed -n 2p
           shellcheck -S warning -x "${sh[@]}"

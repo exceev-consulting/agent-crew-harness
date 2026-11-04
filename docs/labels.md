@@ -22,6 +22,7 @@ project labels are yours: list them in PROFILE.md, Labels, with the rule that pi
 | `needs-changelog` | User-visible change without a CHANGELOG.md line |
 | `needs-ci-approval` | CI is waiting for a maintainer to approve the workflow run |
 | `needs-info` | Waiting for details from the reporter |
+| `needs-spec` | A maintainer asks the feature-planner routine to write the specification |
 | `needs-rebase` | Has merge conflicts with main |
 | `priority: critical` | Breaks servers or security now: fix first |
 | `priority: high` | Needed for the current phase |
@@ -46,9 +47,11 @@ project labels are yours: list them in PROFILE.md, Labels, with the rule that pi
 | `wontfix` | This will not be worked on |
 
 Who sets what:
-- People: `ready`, `agent-ready` (the go-ahead to write code), `priority: critical` when a maintainer confirms a blocking bug.
+- People: `ready`, `agent-ready` (the go-ahead to write code), `needs-spec` (ask the feature-planner for a specification),
+  `priority: critical` when a maintainer confirms a blocking bug.
 - issue-triage: `triaged`, `needs-info`, type, `priority:` and `size:` labels on issues.
 - bug-hunter, security-watch, market-research: open issues with `claude` (+ `bug` / `enhancement` / `proposal` / `security`).
+- feature-planner: writes specifications, opens sub-issues and weekly `proposal` issues; removes `needs-spec` once done.
 - pr-metadata: every label on pull requests it manages, including `review: ...`, `ci-failing`, `needs-rebase`,
   `needs-changelog`, `stale`, `needs-ci-approval`, `first-time contributor`.
 - sentinel: opens a `priority: critical` issue when the default branch stays red.

@@ -1,0 +1,1177 @@
+#!/usr/bin/env python3
+"""status-board-collect: build the status board snapshot (the one document the status board page reads).
+
+  status-board-collect     collect, write <harness_dir>/state/status-board/out/snapshot.json, print one JSON line
+                           (file, bytes, status, attention, errors)
+
+Reads GitHub with the maintainer's plain `gh` login, read-only, and the routine run history the status-board routine
+saved in <harness_dir>/state/status-board/raw/ (tasks.json from list_scheduled_tasks, runs-<taskId>.json from
+list_task_runs). Only tasks whose id starts with task_prefix are shown. It never writes to GitHub.
+
+Settings: harness.json (or $HARNESS_CONFIG) for the identity, status-board.json in harness_dir (or
+$HARNESS_STATUS_BOARD_CONF) for the project's parts: timezone, refresh times, CI workflows, the optional test results
+(docs/status-board.md). Cache of parsed CI artifacts: <harness_dir>/state/status-board/cache/.
+
+Test mode (HARNESS_TEST=1 only): HARNESS_STATUS_BOARD_FAKE=DIR replaces every gh call with DIR/<name>.json (or .txt),
+and artifact downloads with DIR/artifacts/<run id>/; HARNESS_STATUS_BOARD_HOME replaces harness_dir;
+HARNESS_STATUS_BOARD_NOW fixes the clock.
+
+Exit 0 = snapshot written (it may list collection errors), 1 = nothing written.
+"""
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+if len(sys.argv) > 1:
+    print(__doc__, file=sys.stderr)
+    sys.exit(0 if sys.argv[1] in ("-h", "--help") else 2)
+
+R = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(R / "lib"))
+import harness  # noqa: E402
+
+TEST = os.environ.get("HARNESS_TEST") == "1"
+
+
+def test_env(name: str) -> str | None:
+    """A test override: honoured only in test mode."""
+    return os.environ.get(name) or None if TEST else None
+
+
+_H = harness.load()
+REPO = _H["repo"]
+PROJECT = _H["project"]
+DEFAULT_BRANCH = _H.get("default_branch") or "main"
+ME = _H.get("maintainer") or ""            # the maintainer who reviews, approves and merges
+CO_MAINTAINER = _H.get("co_maintainer") or ""
+BOT = _H["bot_app"]
+TASK_PREFIX = _H["task_prefix"]
+SELF_TASK = TASK_PREFIX + "status-board"
+BASE = Path(test_env("HARNESS_STATUS_BOARD_HOME") or _H["harness_dir"])
+BOARD = BASE / "state" / "status-board"
+RAW = BOARD / "raw"
+OUT = BOARD / "out"
+CACHE = BOARD / "cache"
+LOCKS = BASE / "locks"
+SCAN_PRIVATE = R / "bin" / "scan-private"
+FAKE = test_env("HARNESS_STATUS_BOARD_FAKE")
+TREND_POINTS = 180          # ~3 months at two refreshes a day
+ACTIVITY_DAYS = 14
+ROUTINE_PR_CAP = 5          # the issue-developer routine starts no new issue at 5 open routine PRs
+
+errors: list[str] = []
+
+# --------------------------------------------------------------------------- settings
+conf_path = Path(os.environ.get("HARNESS_STATUS_BOARD_CONF") or BASE / "status-board.json")
+try:
+    CONF = json.loads(conf_path.read_text())
+    if not isinstance(CONF, dict):
+        raise ValueError("not a JSON object")
+except FileNotFoundError:
+    CONF = {}
+    errors.append("settings: status-board.json not found, defaults used")
+except (OSError, ValueError) as exc:
+    print(f"status-board-collect: cannot read {conf_path.name}: {exc}", file=sys.stderr)
+    sys.exit(1)
+try:
+    TZ = ZoneInfo(CONF.get("timezone") or "UTC")
+except (ZoneInfoNotFoundError, ValueError):
+    print(f"status-board-collect: unknown timezone {CONF.get('timezone')!r} in {conf_path.name}", file=sys.stderr)
+    sys.exit(1)
+REFRESH_TIMES = []
+for _t in CONF.get("refresh_times") or ["08:30", "19:30"]:
+    _m = re.fullmatch(r"([01]?\d|2[0-3]):([0-5]\d)", str(_t))
+    if not _m:
+        print(f"status-board-collect: refresh_times: {_t!r} is not HH:MM", file=sys.stderr)
+        sys.exit(1)
+    REFRESH_TIMES.append((int(_m.group(1)), int(_m.group(2))))
+REFRESH_TIMES.sort()
+CHANGELOG = CONF.get("changelog", "CHANGELOG.md")
+RELEASE_WORKFLOW = CONF.get("release_workflow")
+_ci = CONF.get("ci") or {}
+CI_WORKFLOWS = [w for w in _ci.get("workflows") or [] if isinstance(w, dict) and w.get("name")]
+CI_NAMES = {w["name"] for w in CI_WORKFLOWS}
+REQUIRED = {w["name"] for w in CI_WORKFLOWS if w.get("required")}
+SHOW_OTHER = _ci.get("show_other_workflows", True)
+TESTS_CONF = CONF.get("tests") or None
+SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}")
+if TESTS_CONF is not None:
+    bad = [k for k in ("workflow", "artifact_prefix", "results_file") if not isinstance(TESTS_CONF.get(k), str)]
+    if bad or TESTS_CONF.get("format", "scenarios-v1") != "scenarios-v1" \
+            or not SAFE_NAME.fullmatch(TESTS_CONF["results_file"]) or not SAFE_NAME.fullmatch(TESTS_CONF["workflow"]):
+        print("status-board-collect: tests needs workflow, artifact_prefix and results_file (plain names), "
+              "and format \"scenarios-v1\" (the only one supported)", file=sys.stderr)
+        sys.exit(1)
+
+NOW = datetime.now(timezone.utc)
+if FAKE and test_env("HARNESS_STATUS_BOARD_NOW"):
+    NOW = datetime.fromisoformat(test_env("HARNESS_STATUS_BOARD_NOW").replace("Z", "+00:00"))
+
+
+# --------------------------------------------------------------------------- helpers
+def gh_cmd(args: list[str]) -> list[str]:
+    # pr/issue/run/release need the repository: the collector runs outside any checkout
+    return ["gh", *args, "-R", REPO] if args[0] in ("pr", "issue", "run", "release") else ["gh", *args]
+
+
+def gh_out(name: str, args: list[str], ext: str = "json") -> str:
+    """stdout of a read-only gh call; in test mode the content of FAKE/<name>.<ext> (empty when missing)."""
+    if FAKE:
+        p = Path(FAKE) / f"{name}.{ext}"
+        return p.read_text() if p.is_file() else ""
+    return subprocess.run(gh_cmd(args), capture_output=True, text=True, timeout=120, check=True).stdout
+
+
+def gh_json(name: str, args: list[str], what: str, default=None):
+    try:
+        out = gh_out(name, args)
+        return json.loads(out) if out.strip() else default
+    except Exception as exc:  # noqa: BLE001 - one failed source must not stop the snapshot
+        msg = getattr(exc, "stderr", "") or str(exc)
+        errors.append(f"{what}: {msg.strip().splitlines()[-1] if msg.strip() else 'failed'}")
+        return default
+
+
+def gh_text(name: str, args: list[str], what: str) -> str:
+    try:
+        return gh_out(name, args, "txt")
+    except Exception:  # noqa: BLE001
+        errors.append(f"{what}: failed")
+        return ""
+
+
+def gh_download(run_id: int, pattern: str, dest: Path) -> None:
+    """Download a run's artifacts matching pattern into dest. In test mode: copy FAKE/artifacts/<run id>/."""
+    if FAKE:
+        src = Path(FAKE) / "artifacts" / str(run_id)
+        if src.is_dir():
+            shutil.copytree(src, dest, dirs_exist_ok=True, symlinks=True)
+        return
+    subprocess.run(["gh", "run", "download", str(run_id), "-R", REPO, "-p", pattern, "-D", str(dest)],
+                   capture_output=True, text=True, timeout=300)
+
+
+def ts(value) -> datetime | None:
+    if not value or str(value).startswith("0001-"):
+        return None
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def iso(dt: datetime | None) -> str | None:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
+
+
+def local_day(dt: datetime) -> str:
+    return dt.astimezone(TZ).strftime("%Y-%m-%d")
+
+
+def is_private(text: str) -> bool:
+    """True when scan-private refuses the text, or when the guard is broken."""
+    if not text:
+        return False
+    try:
+        rc = subprocess.run([str(SCAN_PRIVATE)], input=text, capture_output=True, text=True, timeout=20).returncode
+    except Exception:  # noqa: BLE001
+        return True
+    return rc != 0
+
+
+def clean(text: str | None, limit: int = 220) -> str | None:
+    if not text:
+        return None
+    text = " ".join(str(text).split())
+    if is_private(text):
+        return "[hidden: mentions private infrastructure]"
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def labels_of(item) -> list[str]:
+    return [lbl["name"] for lbl in item.get("labels") or []]
+
+
+def login_of(author) -> str:
+    login = (author or {}).get("login") or "ghost"
+    return login.removeprefix("app/")
+
+
+def num(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def cut(value, limit=200) -> str:
+    text = " ".join(str(value).split()) if value is not None else ""
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# Branches that work on an issue: claude/fix-12-..., fix/12, feat-12, iss12...
+ISSUE_BRANCH = re.compile(r"(?:fix|feat|docs|hotfix|iss|issue)[-/]?(\d+)")
+GH = f"https://github.com/{REPO}"
+RELEASE_URL = f"{GH}/actions/workflows/{RELEASE_WORKFLOW}" if RELEASE_WORKFLOW else f"{GH}/releases"
+
+# --------------------------------------------------------------------------- previous snapshot
+prev = {}
+prev_path = OUT / "snapshot.json"
+if prev_path.exists():
+    try:
+        prev = json.loads(prev_path.read_text())
+    except ValueError:
+        prev = {}
+prev_at = ts(prev.get("generatedAt")) or NOW - timedelta(hours=12)
+
+# --------------------------------------------------------------------------- repository
+repo_raw = gh_json("repo", ["api", f"repos/{REPO}"], "repository", {}) or {}
+release = (gh_json("releases", ["release", "list", "--limit", "1", "--json", "tagName,publishedAt,name"], "releases", [])
+           or [None])[0]
+unreleased = 0
+if CHANGELOG:
+    changelog = gh_text("changelog", ["api", "-H", "Accept: application/vnd.github.raw",
+                                      f"repos/{REPO}/contents/{CHANGELOG}?ref={DEFAULT_BRANCH}"], "changelog")
+    m = re.search(r"^## \[Unreleased\]\s*$(.*?)^## ", changelog + "\n## ", re.S | re.M)
+    if m:
+        unreleased = len(re.findall(r"^- ", m.group(1), re.M))
+release_at = ts(release and release.get("publishedAt"))
+repo = {
+    "name": REPO,
+    "url": GH,
+    "stars": repo_raw.get("stargazers_count", 0),
+    "forks": repo_raw.get("forks_count", 0),
+    "watchers": repo_raw.get("subscribers_count", 0),
+    "lastPush": repo_raw.get("pushed_at"),
+    "release": {
+        "tag": release.get("tagName") if release else None,
+        "publishedAt": release.get("publishedAt") if release else None,
+        "url": f"{GH}/releases/tag/{release['tagName']}" if release else None,
+        "daysAgo": (NOW - release_at).days if release_at else None,
+    },
+    "unreleasedChanges": unreleased,
+}
+
+# --------------------------------------------------------------------------- pull requests
+pr_fields = ("number,title,author,labels,milestone,isDraft,createdAt,updatedAt,reviewDecision,mergeable,headRefName,"
+             "statusCheckRollup,url,additions,deletions")
+prs_raw = gh_json("prs_open", ["pr", "list", "--state", "open", "--limit", "100", "--json", pr_fields],
+                  "open pull requests", []) or []
+
+
+def checks_state(rollup) -> tuple[str, list[str]]:
+    if not rollup:
+        return "none", []
+    failing, pending = [], False
+    for c in rollup:
+        concl = (c.get("conclusion") or c.get("state") or "").upper()
+        status = (c.get("status") or "").upper()
+        name = c.get("name") or c.get("context") or "check"
+        if concl in ("FAILURE", "ERROR", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"):
+            failing.append(name)
+        elif concl in ("", "PENDING", "EXPECTED") or status in ("IN_PROGRESS", "QUEUED", "PENDING", "WAITING"):
+            pending = True
+    if failing:
+        return "failing", failing
+    return ("pending" if pending else "passing"), []
+
+
+prs = []
+for p in prs_raw:
+    lbls = labels_of(p)
+    author = login_of(p.get("author"))
+    state, failing = checks_state(p.get("statusCheckRollup"))
+    review = next((lbl.split(": ", 1)[1] for lbl in lbls if lbl.startswith("review: ")), None)
+    if p.get("isDraft"):
+        waiting, who = "Draft: author still working", "author"
+    elif state == "failing":
+        waiting, who = "Author: fix failing checks", "author"
+    elif "needs-ci-approval" in lbls or state == "none":
+        waiting, who = "You: approve the CI run", "you"
+    elif p.get("mergeable") == "CONFLICTING" or "needs-rebase" in lbls:
+        waiting, who = "Author: resolve conflicts", "author"
+    elif review in ("changes suggested", "do not merge"):
+        waiting, who = f"Author: address review ({review})", "author"
+    elif p.get("reviewDecision") == "APPROVED":
+        waiting, who = "You: merge", "you"
+    elif author == ME and CO_MAINTAINER:
+        waiting, who = f"{CO_MAINTAINER}: approve", "other"
+    elif state == "pending":
+        waiting, who = "CI running", "ci"
+    elif author == ME:
+        waiting, who = "You: merge", "you"
+    else:
+        waiting, who = "You: review and approve", "you"
+    created = ts(p.get("createdAt"))
+    prs.append({
+        "number": p["number"],
+        "title": p["title"],
+        "url": p["url"],
+        "author": author,
+        "isBot": author == BOT,
+        "isRoutine": "claude" in lbls or author == BOT,
+        "draft": p.get("isDraft", False),
+        "labels": [lbl for lbl in lbls if not lbl.startswith(("area: ", "review: "))],
+        "areas": [lbl.split(": ", 1)[1] for lbl in lbls if lbl.startswith("area: ")],
+        "review": review,
+        "reviewDecision": p.get("reviewDecision"),
+        "mergeable": p.get("mergeable"),
+        "checks": state,
+        "failingChecks": failing,
+        "waitingOn": waiting,
+        "waitingWho": who,
+        "ageDays": (NOW - created).days if created else None,
+        "createdAt": p.get("createdAt"),
+        "updatedAt": p.get("updatedAt"),
+        "size": (p.get("additions") or 0) + (p.get("deletions") or 0),
+        "branch": p.get("headRefName"),
+    })
+prs.sort(key=lambda x: (x["waitingWho"] != "you", -x["number"]))
+
+# --------------------------------------------------------------------------- issues
+issues_raw = gh_json("issues_open", ["issue", "list", "--state", "open", "--limit", "400", "--json",
+                                     "number,title,labels,author,createdAt,updatedAt,url,milestone"],
+                     "open issues", []) or []
+by_type = {k: 0 for k in ("bug", "security", "enhancement", "documentation", "epic")}
+by_prio = {k: 0 for k in ("high", "medium", "low")}
+queues = {"agentReady": [], "needsInfo": [], "blocked": [], "proposals": [], "highBugs": []}
+covered = {int(n) for p in prs_raw for n in ISSUE_BRANCH.findall(p.get("headRefName") or "")}
+for i in issues_raw:
+    lbls = labels_of(i)
+    for k in by_type:
+        if k in lbls:
+            by_type[k] += 1
+    for k in by_prio:
+        if f"priority: {k}" in lbls:
+            by_prio[k] += 1
+    brief = {"number": i["number"], "title": i["title"], "url": i["url"],
+             "priority": next((lbl.split(": ", 1)[1] for lbl in lbls if lbl.startswith("priority: ")), None),
+             "size": next((lbl.split(": ", 1)[1] for lbl in lbls if lbl.startswith("size: ")), None),
+             "hasPr": i["number"] in covered}
+    if "agent-ready" in lbls or "ready" in lbls:
+        queues["agentReady"].append(brief)
+    if "needs-info" in lbls:
+        queues["needsInfo"].append(brief)
+    if "status: blocked" in lbls:
+        queues["blocked"].append(brief)
+    if "proposal" in lbls and "ready" not in lbls:
+        queues["proposals"].append(brief)
+    if ("bug" in lbls or "security" in lbls) and ("priority: high" in lbls or "priority: critical" in lbls):
+        queues["highBugs"].append(brief)
+prio_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3, None: 4}
+for q in queues.values():
+    q.sort(key=lambda x: (prio_rank.get(x["priority"], 4), x["number"]))
+recent_issues = sorted(issues_raw, key=lambda i: i.get("updatedAt") or "", reverse=True)[:8]
+milestones_raw = gh_json("milestones", ["api", f"repos/{REPO}/milestones?state=open&per_page=50"], "milestones", []) or []
+issues = {
+    "open": len(issues_raw),
+    "byType": by_type,
+    "byPriority": by_prio,
+    "queues": queues,
+    "recent": [{"number": i["number"], "title": i["title"], "url": i["url"], "author": login_of(i.get("author")),
+                "labels": [lbl for lbl in labels_of(i) if not lbl.startswith("area: ")][:4], "updatedAt": i.get("updatedAt")}
+               for i in recent_issues],
+    "milestones": [],
+}
+# Release signal, the same for every milestone: "done" when nothing in it is open and something in it closed after the
+# last release (merged, not released yet); "developed" when every open issue left has an open PR (only merges remain);
+# "released" when everything closed before the last release (not flagged again).
+for ms in milestones_raw:
+    ms_prs = [p for p in prs_raw if (p.get("milestone") or {}).get("title") == ms["title"]]
+    ms_issues = [i for i in issues_raw if (i.get("milestone") or {}).get("title") == ms["title"]]
+    state, since_release, to_merge = "open", 0, []
+    if ms["open_issues"] == 0 and ms["closed_issues"] > 0:
+        closed = gh_json(f"milestone_{ms['number']}_closed",
+                         ["api", f"repos/{REPO}/issues?milestone={ms['number']}&state=closed&per_page=100"],
+                         f"milestone {ms['number']} closed items", []) or []
+        since_release = sum(1 for c in closed if not release_at or (ts(c.get("closed_at")) or NOW) > release_at)
+        state = "done" if since_release else "released"
+    elif (ms_issues or ms_prs) and all(i["number"] in covered for i in ms_issues):
+        state = "developed"
+        wanted = {i["number"] for i in ms_issues}
+        to_merge = sorted({p["number"] for p in ms_prs} |
+                          {p["number"] for p in prs_raw
+                           if wanted & {int(n) for n in ISSUE_BRANCH.findall(p.get("headRefName") or "")}})
+    issues["milestones"].append({"title": ms["title"], "open": ms["open_issues"], "closed": ms["closed_issues"],
+                                 "due": ms.get("due_on"), "url": ms["html_url"], "state": state,
+                                 "closedSinceRelease": since_release, "toMerge": to_merge})
+
+# --------------------------------------------------------------------------- CI runs
+since14 = (NOW - timedelta(days=ACTIVITY_DAYS)).strftime("%Y-%m-%d")
+runs_raw = gh_json("runs", ["run", "list", "--limit", "300", "--created", f">={since14}", "--json",
+                            "databaseId,workflowName,status,conclusion,event,headBranch,createdAt,updatedAt,displayTitle,url"],
+                   "workflow runs", []) or []
+if not SHOW_OTHER and CI_NAMES:
+    shown_runs = [r for r in runs_raw if r.get("workflowName") in CI_NAMES]
+else:
+    shown_runs = runs_raw
+week_ago = NOW - timedelta(days=7)
+per_wf: dict[str, dict] = {}
+main_latest: dict[str, dict] = {}
+for r in shown_runs:
+    wf = r["workflowName"]
+    created = ts(r["createdAt"])
+    concl = r.get("conclusion") or ""
+    if created and created >= week_ago:
+        s = per_wf.setdefault(wf, {"name": wf, "required": wf in REQUIRED, "success": 0, "failure": 0, "other": 0})
+        if concl == "success":
+            s["success"] += 1
+        elif concl in ("failure", "timed_out", "startup_failure"):
+            s["failure"] += 1
+        else:
+            s["other"] += 1
+    if r.get("headBranch") == DEFAULT_BRANCH and r.get("event") != "pull_request" and wf not in main_latest:
+        main_latest[wf] = {"workflow": wf, "required": wf in REQUIRED, "status": r["status"], "conclusion": concl or None,
+                           "createdAt": r["createdAt"], "url": r["url"], "title": r.get("displayTitle")}
+for s in per_wf.values():
+    decided = s["success"] + s["failure"]
+    s["passRate"] = round(100 * s["success"] / decided) if decided else None
+tot_s = sum(s["success"] for s in per_wf.values())
+tot_f = sum(s["failure"] for s in per_wf.values())
+ci = {
+    "defaultBranch": DEFAULT_BRANCH,
+    "passRate7d": round(100 * tot_s / (tot_s + tot_f)) if tot_s + tot_f else None,
+    "runs7d": sum(s["success"] + s["failure"] + s["other"] for s in per_wf.values()),
+    "failures7d": tot_f,
+    "byWorkflow": sorted(per_wf.values(), key=lambda s: (not s["required"], s["name"])),
+    "main": sorted(main_latest.values(), key=lambda x: (not x["required"], x["workflow"])),
+    "recent": [{"workflow": r["workflowName"], "status": r["status"], "conclusion": r.get("conclusion") or None,
+                "branch": r.get("headBranch"), "event": r.get("event"), "createdAt": r["createdAt"],
+                "url": r["url"], "title": r.get("displayTitle")} for r in shown_runs[:15]],
+}
+branch_pr = {p["branch"]: p["number"] for p in prs}
+
+# --------------------------------------------------------------------------- test results (optional)
+# The tests workflow's finished runs, each with one artifact per system (<artifact_prefix><system>) holding a results
+# file in the scenarios-v1 format (docs/status-board.md), parsed once and cached under state/status-board/cache/tests/.
+# Checks: the steps of one CI workflow, cached the same way. Artifacts are written by pull request code: they are
+# parsed as JSON data only, never followed through links, sizes and strings capped.
+TEST_DAYS = 30
+TEST_RUNS_MAX = 20
+CHECK_RUNS_MAX = 25
+SEQ = {"passed": "P", "failed": "F", "skipped": "S"}
+STEP_SKIP = ("Set up job", "Complete job")
+RUN_STATE = {"success": "passed", "failure": "failed", "startup_failure": "failed", "timed_out": "failed",
+             "cancelled": "cancelled", "skipped": "cancelled"}
+
+
+def parse_results(path: Path) -> dict | None:
+    if path.is_symlink() or path.parent.is_symlink() or not path.is_file() or path.stat().st_size > 5_000_000:
+        return None
+    try:
+        d = json.loads(path.read_text(errors="replace"))
+    except ValueError:
+        return None
+    if not isinstance(d, dict) or not isinstance(d.get("scenarios"), list):
+        return None
+    scenarios = []
+    for s in d["scenarios"][:60]:
+        if not isinstance(s, dict):
+            continue
+        asserts = [a for a in (s.get("assertions") or []) if isinstance(a, dict)][:80]
+        scenarios.append({
+            "id": cut(s.get("id"), 60), "title": cut(s.get("title"), 140), "group": cut(s.get("group"), 40),
+            "status": s.get("status") if s.get("status") in SEQ else "failed",
+            "durationS": num(s.get("duration_s")), "reason": cut(s.get("reason")),
+            "assertions": [{"name": cut(a.get("name"), 140), "ok": a.get("ok") is True, "detail": cut(a.get("detail"))}
+                           for a in asserts],
+        })
+    audit = {}
+    if isinstance(d.get("audit"), dict):
+        for stage, a in list(d["audit"].items())[:6]:
+            if isinstance(a, dict):
+                audit[cut(stage, 30)] = {k: num(a.get(k)) for k in ("pass", "warn", "fail", "info", "score")}
+    second_bad = []
+    for st in d.get("steps") or []:
+        if isinstance(st, dict) and str(st.get("second", "")).upper().startswith(("CHANGED", "FAIL")):
+            second_bad.append(f"{cut(st.get('label') or st.get('step'), 60)}: {cut(st.get('second'), 30)}")
+    counts = d.get("counts") if isinstance(d.get("counts"), dict) else {}
+    return {
+        "os": cut(d.get("os"), 40), "label": cut(d.get("label"), 60),
+        "status": "passed" if d.get("status") == "passed" else "failed",
+        "counts": {k: num(counts.get(k)) or 0 for k in ("passed", "failed", "skipped")},
+        "durationS": num(d.get("duration_s")), "accel": cut(d.get("accel"), 10), "kernel": cut(d.get("kernel"), 60),
+        "reason": cut(d.get("reason")), "audit": audit, "secondRun": second_bad[:20], "scenarios": scenarios,
+    }
+
+
+def run_jobs(run_id) -> list:
+    return (gh_json(f"run_{run_id}_jobs", ["run", "view", str(run_id), "--json", "jobs"], "run jobs", {}) or {}).get("jobs", [])
+
+
+def read_cache(kind: str, run_id) -> dict | None:
+    path = CACHE / kind / f"{int(run_id)}.json"
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except ValueError:
+            pass
+    return None
+
+
+def write_cache(kind: str, run_id, data: dict) -> None:
+    path = CACHE / kind / f"{int(run_id)}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, separators=(",", ":")))
+
+
+def collect_tests():
+    tc = TESTS_CONF
+    prefix, results_file = tc["artifact_prefix"], tc["results_file"]
+    ignore_jobs = set(tc.get("ignore_jobs") or [])
+    report = tc.get("report") or {}
+    checks_wf = tc.get("checks_workflow") or next((w.get("file") for w in CI_WORKFLOWS if w.get("required")), None)
+    checks_name = next((w["name"] for w in CI_WORKFLOWS if w.get("file") == checks_wf), None) or \
+        (checks_wf or "").removesuffix(".yml").removesuffix(".yaml") or None
+
+    def report_url(branch: str | None) -> str | None:
+        base = report.get("url")
+        if not base:
+            return None
+        if branch == DEFAULT_BRANCH and report.get("main"):
+            return base + report["main"]
+        if branch in branch_pr and report.get("pr"):
+            return base + report["pr"].replace("{pr}", str(branch_pr[branch]))
+        return base
+
+    def summary_run(run) -> dict | None:
+        if not run:
+            return None
+        jobs = []
+        for j in run_jobs(run["databaseId"]):
+            if j.get("name") in ignore_jobs:
+                continue
+            start, end = ts(j.get("startedAt")), ts(j.get("completedAt"))
+            jobs.append({"name": j["name"], "status": j.get("status"), "conclusion": j.get("conclusion") or None,
+                         "minutes": round((end - start).total_seconds() / 60) if start and end else None, "url": j.get("url")})
+        jobs.sort(key=lambda j: j["name"])
+        return {"branch": run.get("headBranch"), "event": run.get("event"), "status": run["status"],
+                "conclusion": run.get("conclusion") or None, "createdAt": run["createdAt"], "url": run["url"],
+                "title": run.get("displayTitle"), "jobs": jobs}
+
+    def tests_cached(run: dict) -> dict | None:
+        """Results of one finished tests run, from the cache or downloaded once."""
+        data = read_cache("tests", run["databaseId"])
+        if data:
+            return data
+        expected = [j["name"] for j in run_jobs(run["databaseId"]) if j.get("name") not in ignore_jobs]
+        BOARD.mkdir(parents=True, exist_ok=True)
+        dl = Path(tempfile.mkdtemp(prefix="artifacts-", dir=BOARD))
+        try:
+            gh_download(run["databaseId"], prefix + "*", dl)
+            oses = {}
+            for f in sorted(dl.glob(f"*/{results_file}")) + sorted(dl.glob(results_file)):
+                parsed = parse_results(f)
+                if parsed:
+                    name = f.parent.name.removeprefix(prefix) if f.parent != dl else parsed["os"]
+                    parsed["os"] = name if re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,39}", name or "") else parsed["os"]
+                    oses[parsed["os"]] = parsed
+            for name in expected:
+                oses.setdefault(name, {"os": name, "status": "missing", "reason": "the job ended without results",
+                                       "counts": {"passed": 0, "failed": 0, "skipped": 0}, "scenarios": []})
+        finally:
+            shutil.rmtree(dl, ignore_errors=True)
+        start, end = ts(run.get("createdAt")), ts(run.get("updatedAt"))
+        data = {"runId": run["databaseId"], "branch": run.get("headBranch"), "sha": (run.get("headSha") or "")[:7],
+                "event": run.get("event"), "title": cut(run.get("displayTitle"), 140), "createdAt": run.get("createdAt"),
+                "url": run.get("url"), "conclusion": run.get("conclusion"),
+                "durationS": round((end - start).total_seconds()) if start and end else None,
+                "oses": dict(sorted(oses.items()))}
+        write_cache("tests", run["databaseId"], data)
+        return data
+
+    def checks_cached(run: dict) -> dict | None:
+        data = read_cache("checks", run["databaseId"])
+        if data:
+            return data
+        view = gh_json(f"run_{run['databaseId']}_jobs", ["run", "view", str(run["databaseId"]), "--json", "jobs"],
+                       "check jobs", None)
+        if not view:
+            return None
+        steps = []
+        for j in view.get("jobs", []):
+            for st in j.get("steps", []):
+                name = st.get("name", "")
+                if name in STEP_SKIP or name.startswith(("Run actions/", "Post ")):
+                    continue
+                steps.append({"name": cut(name, 60), "conclusion": st.get("conclusion") or None})
+        start, end = ts(run.get("createdAt")), ts(run.get("updatedAt"))
+        data = {"runId": run["databaseId"], "branch": run.get("headBranch"), "sha": (run.get("headSha") or "")[:7],
+                "event": run.get("event"), "title": cut(run.get("displayTitle"), 140), "createdAt": run.get("createdAt"),
+                "url": run.get("url"), "conclusion": run.get("conclusion"),
+                "durationS": round((end - start).total_seconds()) if start and end else None, "steps": steps}
+        write_cache("checks", run["databaseId"], data)
+        return data
+
+    since30 = (NOW - timedelta(days=TEST_DAYS)).strftime("%Y-%m-%d")
+    run_fields = "databaseId,status,conclusion,event,headBranch,headSha,createdAt,startedAt,updatedAt,displayTitle,url"
+    t_list = gh_json("tests_runs", ["run", "list", "--workflow", tc["workflow"], "--limit", "60", "--created",
+                                    f">={since30}", "--json", run_fields], "test runs", []) or []
+    c_list = gh_json("checks_runs", ["run", "list", "--workflow", checks_wf, "--limit", "80", "--created",
+                                     f">={since30}", "--json", run_fields], "check runs", []) or [] if checks_wf else []
+    t_done = [r for r in t_list if r["status"] == "completed" and r.get("conclusion") in ("success", "failure")][:TEST_RUNS_MAX]
+    c_done = [r for r in c_list if r["status"] == "completed" and r.get("conclusion") in ("success", "failure")][:CHECK_RUNS_MAX]
+    hist = [x for x in (tests_cached(r) for r in reversed(t_done)) if x]          # oldest first
+    c_hist = [x for x in (checks_cached(r) for r in reversed(c_done)) if x]
+
+    t_main = next((r for r in t_list if r.get("headBranch") == DEFAULT_BRANCH), None)
+    t_latest = next((r for r in t_list if r.get("conclusion") != "cancelled"), None)
+    e2e = {
+        "name": tc.get("name") or tc["workflow"],
+        "description": cut(tc.get("description"), 300) or None,
+        "reportUrl": report.get("url"),
+        "main": summary_run(t_main),
+        "latest": summary_run(t_latest) if t_latest is not t_main else None,
+    }
+
+    def result_of(run: dict | None, os_name: str, sid: str) -> str:
+        o = run["oses"].get(os_name) if run else None
+        if not o or o.get("status") == "missing":
+            return "-"
+        s = next((s for s in o.get("scenarios", []) if s["id"] == sid), None)
+        return SEQ.get(s["status"], "F") if s else "-"
+
+    def baseline(idx: int) -> dict | None:
+        """The run a run is compared with: the previous one on its branch, else the previous one on the default branch."""
+        run = hist[idx]
+        for want_main in (False, True):
+            for before in reversed(hist[:idx]):
+                if (before["branch"] == DEFAULT_BRANCH) if want_main else (before["branch"] == run["branch"]):
+                    return before
+        return None
+
+    # every (scenario, system) seen in the window, in scenario order of the newest run that has it
+    pairs: dict[tuple[str, str], dict] = {}
+    scenario_order: list[str] = []
+    for run in reversed(hist):
+        for os_name, o in run["oses"].items():
+            for s in o.get("scenarios", []):
+                pairs.setdefault((s["id"], os_name), {"title": s["title"], "group": s["group"]})
+                if s["id"] not in scenario_order:
+                    scenario_order.append(s["id"])
+    os_order = sorted({os_name for (_, os_name) in pairs})
+
+    test_runs = []
+    run_changes: dict[int, tuple[int, int, bool]] = {}  # runId -> (new failures, fixed, has a baseline)
+    for idx, run in enumerate(hist):
+        base = baseline(idx)
+        new_fail, fixed_n = [], 0
+        for (sid, os_name) in pairs:
+            now_r = result_of(run, os_name, sid)
+            before = result_of(base, os_name, sid)
+            if now_r == "F" and before == "P":
+                new_fail.append(f"{sid} on {os_name}")
+            elif now_r == "P" and before == "F":
+                fixed_n += 1
+        counts = {k: sum((o.get("counts") or {}).get(k, 0) for o in run["oses"].values()) for k in ("passed", "failed", "skipped")}
+        missing = [n for n, o in run["oses"].items() if o.get("status") == "missing"]
+        run_changes[run["runId"]] = (len(new_fail), fixed_n, base is not None)
+        test_runs.append({
+            "kind": "e2e", "runId": run["runId"], "branch": run["branch"], "pr": branch_pr.get(run["branch"]),
+            "sha": run["sha"], "title": run["title"], "createdAt": run["createdAt"], "url": run["url"],
+            "reportUrl": report_url(run["branch"]), "durationS": run["durationS"],
+            "status": "passed" if run["conclusion"] == "success" and not missing else "failed",
+            "counts": counts, "missing": missing, "newFailures": new_fail[:12], "newFailureCount": len(new_fail),
+            "fixedCount": fixed_n, "baseline": base["runId"] if base else None,
+            "oses": [{"os": n, "status": o.get("status"), "passed": (o.get("counts") or {}).get("passed", 0),
+                      "failed": (o.get("counts") or {}).get("failed", 0)} for n, o in run["oses"].items()],
+        })
+    for run in c_hist:
+        st = run["steps"]
+        test_runs.append({
+            "kind": "checks", "runId": run["runId"], "branch": run["branch"], "pr": branch_pr.get(run["branch"]),
+            "sha": run["sha"], "title": run["title"], "createdAt": run["createdAt"], "url": run["url"],
+            "durationS": run["durationS"], "status": "passed" if run["conclusion"] == "success" else "failed",
+            "counts": {"passed": sum(s["conclusion"] == "success" for s in st), "failed": sum(s["conclusion"] == "failure" for s in st),
+                       "skipped": sum(s["conclusion"] not in ("success", "failure") for s in st)},
+            "failedSteps": [s["name"] for s in st if s["conclusion"] == "failure"],
+        })
+    for kind, lst in (("e2e", t_list), ("checks", c_list)):  # runs still going
+        for r in lst:
+            if r["status"] != "completed":
+                test_runs.append({"kind": kind, "runId": r["databaseId"], "branch": r.get("headBranch"),
+                                  "pr": branch_pr.get(r.get("headBranch")), "sha": (r.get("headSha") or "")[:7],
+                                  "title": cut(r.get("displayTitle"), 140), "createdAt": r["createdAt"], "url": r["url"],
+                                  "status": "running", "counts": None})
+    test_runs.sort(key=lambda r: r["createdAt"], reverse=True)
+
+    def detail_of(run: dict | None) -> dict | None:
+        if not run:
+            return None
+        return {"runId": run["runId"], "branch": run["branch"], "pr": branch_pr.get(run["branch"]), "sha": run["sha"],
+                "title": run["title"], "createdAt": run["createdAt"], "url": run["url"], "reportUrl": report_url(run["branch"]),
+                "oses": [{k: v for k, v in o.items() if k != "scenarios"} for o in run["oses"].values()],
+                "cells": {f"{s['id']}|{o['os']}": {"status": s["status"], "durationS": s["durationS"], "reason": s["reason"],
+                                                   "assertions": s["assertions"]}
+                          for o in run["oses"].values() for s in o.get("scenarios", [])}}
+
+    latest_run = hist[-1] if hist else None
+    main_run = next((r for r in reversed(hist) if r["branch"] == DEFAULT_BRANCH), None)
+    rows, health = [], {"regressions": [], "fixed": [], "failing": [], "flaky": []}
+    latest_base = baseline(len(hist) - 1) if hist else None
+    for (sid, os_name), meta in pairs.items():
+        seq = "".join(result_of(r, os_name, sid) for r in hist)
+        known = [c for c in seq if c in "PF"]
+        flips = sum(1 for a, b in zip(known, known[1:]) if a != b)
+        by_sha: dict[str, set] = {}
+        for r in hist:
+            res = result_of(r, os_name, sid)
+            if res in "PF":
+                by_sha.setdefault(r["sha"], set()).add(res)
+        same_sha_mixed = any(len(v) > 1 for v in by_sha.values())
+        durations = [s["durationS"] for r in hist[-5:] for s in (r["oses"].get(os_name) or {}).get("scenarios", [])
+                     if s["id"] == sid and isinstance(s["durationS"], (int, float))]
+        now_r = result_of(latest_run, os_name, sid)
+        before = result_of(latest_base, os_name, sid)
+        if now_r == "F" and before == "P":
+            state = "regression"
+        elif now_r == "P" and before == "F":
+            state = "fixed"
+        elif same_sha_mixed or flips >= 2:
+            state = "flaky"
+        elif known and known[-1] == "F" and (len(known) >= 3 and set(known[-3:]) == {"F"} or now_r == "F"):
+            state = "failing"
+        else:
+            state = "stable"
+        durs = []
+        for r in hist:
+            s = next((s for s in (r["oses"].get(os_name) or {}).get("scenarios", []) if s["id"] == sid), None)
+            durs.append(round(s["durationS"]) if s and isinstance(s["durationS"], (int, float)) else None)
+        row = {"scenario": sid, "title": meta["title"], "group": meta["group"], "os": os_name, "seq": seq, "durs": durs,
+               "passRate": round(100 * known.count("P") / len(known)) if known else None, "flips": flips,
+               "avgS": round(sum(durations) / len(durations)) if durations else None, "state": state}
+        rows.append(row)
+        if state != "stable":
+            health["regressions" if state == "regression" else state].append(row)
+    rank_s = {sid: i for i, sid in enumerate(scenario_order)}
+    rows.sort(key=lambda r: (rank_s.get(r["scenario"], 99), r["os"]))
+    for v in health.values():
+        v.sort(key=lambda r: (rank_s.get(r["scenario"], 99), r["os"]))
+
+    # most common failures: same scenario + failed assertion, across the window
+    fails: dict[tuple[str, str], dict] = {}
+    for r in hist:
+        for os_name, o in r["oses"].items():
+            if o.get("status") == "missing":
+                f = fails.setdefault(("(job)", "ended without results"), {"scenario": "(job)", "message": "ended without results",
+                                                                          "count": 0, "oses": set(), "lastAt": None, "detail": ""})
+                f["count"] += 1
+                f["oses"].add(os_name)
+                f["lastAt"] = r["createdAt"]
+                continue
+            for s in o.get("scenarios", []):
+                if s["status"] != "failed":
+                    continue
+                bad = [a for a in s["assertions"] if not a["ok"]] or [{"name": s["reason"] or "scenario failed", "detail": ""}]
+                for a in bad:
+                    f = fails.setdefault((s["id"], a["name"]), {"scenario": s["id"], "message": a["name"], "count": 0,
+                                                                "oses": set(), "lastAt": None, "detail": ""})
+                    f["count"] += 1
+                    f["oses"].add(os_name)
+                    f["lastAt"] = r["createdAt"]
+                    f["detail"] = a.get("detail") or f["detail"]
+    top_failures = sorted(fails.values(), key=lambda f: (-f["count"], f["lastAt"] or ""))[:10]
+    for f in top_failures:
+        f["oses"] = sorted(f["oses"])
+
+    # slowest scenarios (average over the last 5 runs, every system)
+    slow: dict[str, list] = {}
+    for r in hist[-5:]:
+        for o in r["oses"].values():
+            for s in o.get("scenarios", []):
+                if isinstance(s["durationS"], (int, float)) and s["status"] != "skipped":
+                    slow.setdefault(s["id"], []).append(s["durationS"])
+    slowest = sorted(({"scenario": k, "title": pairs.get((k, os_order[0] if os_order else ""), {}).get("title", k),
+                       "avgS": round(sum(v) / len(v)), "maxS": max(v)} for k, v in slow.items()), key=lambda x: -x["avgS"])[:8]
+
+    check_names: list[str] = []
+    for r in c_hist:
+        for s in r["steps"]:
+            if s["name"] not in check_names:
+                check_names.append(s["name"])
+    checks = []
+    for name in check_names:
+        seq, last_fail = "", None
+        for r in c_hist[-20:]:
+            c = next((s["conclusion"] for s in r["steps"] if s["name"] == name), None)
+            seq += {"success": "P", "failure": "F", "skipped": "S"}.get(c or "", "-")
+            if c == "failure":
+                last_fail = {"url": r["url"], "branch": r["branch"], "at": r["createdAt"]}
+        known = [c for c in seq if c in "PF"]
+        checks.append({"name": name, "seq": seq, "passRate": round(100 * known.count("P") / len(known)) if known else None,
+                       "last": seq[-1:] or "-", "lastFailure": last_fail})
+
+    def trend_point(r: dict) -> dict:
+        """One finished tests run for the history charts: totals, per-system results and what changed."""
+        tot = {k: sum((o.get("counts") or {}).get(k, 0) for o in r["oses"].values()) for k in ("passed", "failed", "skipped")}
+        asserts = [a for o in r["oses"].values() for s in o.get("scenarios", []) for a in s["assertions"]]
+        new_n, fixed_n, has_base = run_changes.get(r["runId"], (0, 0, False))
+        known = tot["passed"] + tot["failed"]
+        return {
+            "label": f"{local_day(ts(r['createdAt']))[5:]} {r['sha']}", "runId": r["runId"], "branch": r["branch"],
+            "pr": branch_pr.get(r["branch"]), "sha": r["sha"], "at": r["createdAt"], "url": r["url"], **tot,
+            "minutes": round(r["durationS"] / 60) if r["durationS"] else None, "durationS": r["durationS"],
+            "passRate": round(100 * tot["passed"] / known) if known else None,
+            "results": sum(tot.values()), "scenarios": len({s["id"] for o in r["oses"].values() for s in o.get("scenarios", [])}),
+            "assertions": len(asserts), "assertionsFailed": sum(not a["ok"] for a in asserts),
+            "newFailures": new_n, "fixed": fixed_n, "hasBaseline": has_base,
+            "missing": sum(o.get("status") == "missing" for o in r["oses"].values()),
+            "oses": {n: {"st": o.get("status"), "p": (o.get("counts") or {}).get("passed", 0), "f": (o.get("counts") or {}).get("failed", 0),
+                         "s": (o.get("counts") or {}).get("skipped", 0), "d": o.get("durationS")} for n, o in r["oses"].items()},
+        }
+
+    run_log = []
+    for kind, lst in (("e2e", t_list), ("checks", c_list)):
+        for r in lst:
+            # the latest attempt only: a re-run days later moves updatedAt, and startedAt with it
+            start, end = ts(r.get("startedAt") or r.get("createdAt")), ts(r.get("updatedAt"))
+            done = r["status"] == "completed"
+            secs_ = round((end - start).total_seconds()) if done and start and end else None
+            run_log.append({"k": kind, "id": r["databaseId"], "at": r["createdAt"], "b": r.get("headBranch"),
+                            "pr": branch_pr.get(r.get("headBranch")),
+                            "c": RUN_STATE.get(r.get("conclusion") or "", "cancelled") if done else "running",
+                            "d": secs_ if secs_ is not None and 0 <= secs_ <= 6 * 3600 else None})
+    run_log.sort(key=lambda r: r["at"])
+
+    all_known = "".join(r["seq"] for r in rows)
+    tests = {
+        "windowDays": TEST_DAYS,
+        "name": e2e["name"],
+        "checksName": checks_name,
+        "osOrder": os_order,
+        "scenarios": [{"id": sid, "title": next((m["title"] for (s, _), m in pairs.items() if s == sid), sid),
+                       "group": next((m["group"] for (s, _), m in pairs.items() if s == sid), "")} for sid in scenario_order],
+        "runs": test_runs[:40],
+        "e2eRunIds": [r["runId"] for r in hist],
+        "e2eRunLabels": [f"{local_day(ts(r['createdAt']))[5:]} {r['sha']}" for r in hist],
+        "latest": detail_of(latest_run),
+        "main": detail_of(main_run) if main_run is not latest_run else None,
+        "rows": rows,
+        "health": {k: [{"scenario": r["scenario"], "title": r["title"], "os": r["os"], "seq": r["seq"]} for r in v]
+                   for k, v in health.items()},
+        "passRate": round(100 * all_known.count("P") / (all_known.count("P") + all_known.count("F")))
+        if "P" in all_known or "F" in all_known else None,
+        "topFailures": top_failures,
+        "slowest": slowest,
+        "trend": [trend_point(r) for r in hist],
+        "runLog": run_log,
+        "checks": checks,
+        "checkRuns": len(c_hist),
+        "checkRunLabels": [f"{local_day(ts(r['createdAt']))[5:]} {r['branch']} {r['sha']}" for r in c_hist[-20:]],
+    }
+    return e2e, tests, health, latest_run, checks
+
+
+e2e = tests = None
+test_health: dict = {"regressions": [], "fixed": [], "failing": [], "flaky": []}
+latest_test_run, checks = None, []
+if TESTS_CONF:
+    e2e, tests, test_health, latest_test_run, checks = collect_tests()
+
+# --------------------------------------------------------------------------- activity (last 14 days)
+commits_raw = gh_json("commits", ["api", f"repos/{REPO}/commits?sha={DEFAULT_BRANCH}&per_page=100&since={since14}T00:00:00Z"],
+                      "commits on the default branch", []) or []
+merged_raw = gh_json("prs_merged", ["pr", "list", "--state", "merged", "--limit", "100", "--search", f"merged:>={since14}",
+                                    "--json", "number,title,mergedAt,author,url"], "merged pull requests", []) or []
+pr_created_raw = gh_json("prs_created", ["pr", "list", "--state", "all", "--limit", "100", "--search", f"created:>={since14}",
+                                         "--json", "number,title,createdAt,author,url"], "new pull requests", []) or []
+iss_created_raw = gh_json("issues_created", ["issue", "list", "--state", "all", "--limit", "200", "--search",
+                                             f"created:>={since14}", "--json", "number,title,createdAt,author,url"],
+                          "new issues", []) or []
+iss_closed_raw = gh_json("issues_closed", ["issue", "list", "--state", "closed", "--limit", "200", "--search",
+                                           f"closed:>={since14}", "--json", "number,title,closedAt,url"],
+                         "closed issues", []) or []
+
+days = {}
+for d in range(ACTIVITY_DAYS - 1, -1, -1):
+    day = local_day(NOW - timedelta(days=d))
+    days[day] = {"date": day, "commits": 0, "prsMerged": 0, "prsOpened": 0, "issuesOpened": 0, "issuesClosed": 0}
+
+
+def bump(when, key):
+    dt = ts(when)
+    if dt and local_day(dt) in days:
+        days[local_day(dt)][key] += 1
+
+
+for c in commits_raw:
+    bump(c["commit"]["committer"]["date"], "commits")
+for p in merged_raw:
+    bump(p.get("mergedAt"), "prsMerged")
+for p in pr_created_raw:
+    bump(p.get("createdAt"), "prsOpened")
+for i in iss_created_raw:
+    bump(i.get("createdAt"), "issuesOpened")
+for i in iss_closed_raw:
+    bump(i.get("closedAt"), "issuesClosed")
+activity = {
+    "days": list(days.values()),
+    "commits": [{"sha": c["sha"][:7], "message": c["commit"]["message"].split("\n", 1)[0][:140],
+                 "author": (c.get("author") or {}).get("login") or c["commit"]["author"]["name"],
+                 "date": c["commit"]["committer"]["date"], "url": c["html_url"]} for c in commits_raw[:8]],
+    "merged": [{"number": p["number"], "title": p["title"], "author": login_of(p.get("author")),
+                "mergedAt": p["mergedAt"], "url": p["url"]}
+               for p in sorted(merged_raw, key=lambda p: p["mergedAt"], reverse=True)[:8]],
+}
+
+# --------------------------------------------------------------------------- routines
+routines = []
+tasks_file = RAW / "tasks.json"
+try:
+    tasks_raw = json.loads(tasks_file.read_text())
+    if isinstance(tasks_raw, dict):
+        tasks_raw = tasks_raw.get("tasks", [])
+    if not isinstance(tasks_raw, list):
+        raise ValueError("not a list")
+    raw_age = NOW - datetime.fromtimestamp(tasks_file.stat().st_mtime, timezone.utc)
+    if raw_age > timedelta(hours=6):
+        errors.append(f"routine list is {raw_age.days}d {raw_age.seconds // 3600}h old (the status-board routine did not save it)")
+except (OSError, ValueError):
+    tasks_raw = []
+    errors.append("routines: state/status-board/raw/tasks.json is missing or unreadable")
+
+for t in tasks_raw:
+    tid = t.get("taskId", "") if isinstance(t, dict) else ""
+    if not tid.startswith(TASK_PREFIX) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", tid):
+        continue
+    runs = []
+    try:
+        rr = json.loads((RAW / f"runs-{tid}.json").read_text())
+        runs = rr.get("runs", []) if isinstance(rr, dict) else rr
+        runs = [r for r in runs if isinstance(r, dict)]
+    except (OSError, ValueError, AttributeError):
+        errors.append(f"routines: no run history for {tid}")
+    if tid == SELF_TASK:
+        # the run collecting this snapshot is still "running": leave it out
+        runs = [r for r in runs if r.get("status") != "running"]
+    recent = []
+    for r in runs[:6]:
+        start, last = ts(r.get("started_at")), ts(r.get("last_activity_at"))
+        recent.append({"status": r.get("status"), "startedAt": r.get("started_at"),
+                       "minutes": round((last - start).total_seconds() / 60) if start and last else None,
+                       "summary": clean(r.get("summary")), "error": clean(r.get("error"), 140)})
+    in7 = [r for r in runs if (ts(r.get("started_at")) or NOW - timedelta(days=99)) >= week_ago]
+    next_at, last_at = ts(t.get("nextRunAt")), ts(t.get("lastRunAt"))
+    last = recent[0] if recent else None
+    if not t.get("enabled"):
+        health = "paused"
+    elif last and last["status"] == "failed":
+        health = "failed"
+    elif next_at and next_at < NOW - timedelta(hours=2):
+        health = "missed"
+    elif last and last["status"] == "running":
+        health = "running"
+    else:
+        health = "ok"
+    routines.append({
+        "id": tid,
+        "title": clean((t.get("title") or tid.removeprefix(TASK_PREFIX)).removeprefix(f"{PROJECT}: "), 80),
+        "description": clean(t.get("description"), 160),
+        "schedule": t.get("schedule"),
+        "cron": t.get("cronExpression"),
+        "enabled": bool(t.get("enabled")),
+        "lastRunAt": iso(last_at),
+        "nextRunAt": iso(next_at) if t.get("enabled") else None,
+        "health": health,
+        "runs7d": {"succeeded": sum(r.get("status") == "succeeded" for r in in7),
+                   "failed": sum(r.get("status") == "failed" for r in in7),
+                   "total": len(in7)},
+        "recent": recent,
+    })
+order = {"failed": 0, "missed": 1, "running": 2, "ok": 3, "paused": 4}
+routines.sort(key=lambda r: (order[r["health"]], r["nextRunAt"] or "9999"))
+
+locks = []
+if LOCKS.is_dir():
+    for f in sorted(LOCKS.glob("issue-*")):
+        mnum = re.match(r"issue-(\d+)\.(lock|failed)$", f.name)
+        if not mnum:
+            continue
+        text = f.read_text(errors="replace").strip() if f.is_file() and not f.is_symlink() else ""
+        first = text.splitlines()[-1] if text else ""
+        parts = first.split(" ", 2)
+        locks.append({"issue": int(mnum.group(1)), "kind": "in progress" if mnum.group(2) == "lock" else "failed",
+                      "at": parts[0] if parts and parts[0] else None, "state": parts[1] if len(parts) > 1 else None,
+                      "note": clean(parts[2] if len(parts) > 2 else "", 160),
+                      "url": f"{GH}/issues/{mnum.group(1)}"})
+
+# --------------------------------------------------------------------------- since the last refresh
+changes = {
+    "since": iso(prev_at),
+    "newPrs": [{"number": p["number"], "title": p["title"], "url": p["url"], "author": login_of(p.get("author"))}
+               for p in pr_created_raw if (ts(p.get("createdAt")) or prev_at) > prev_at],
+    "mergedPrs": [{"number": p["number"], "title": p["title"], "url": p["url"]}
+                  for p in merged_raw if (ts(p.get("mergedAt")) or prev_at) > prev_at],
+    "newIssues": [{"number": i["number"], "title": i["title"], "url": i["url"], "author": login_of(i.get("author"))}
+                  for i in iss_created_raw if (ts(i.get("createdAt")) or prev_at) > prev_at],
+    "closedIssues": [{"number": i["number"], "title": i["title"], "url": i["url"]}
+                     for i in iss_closed_raw if (ts(i.get("closedAt")) or prev_at) > prev_at],
+    "ciFailures": [{"workflow": r["workflowName"], "branch": r.get("headBranch"), "url": r["url"]}
+                   for r in shown_runs if r.get("conclusion") == "failure" and (ts(r["createdAt"]) or prev_at) > prev_at],
+    "routineRuns": {
+        "succeeded": sum(1 for rt in routines for r in rt["recent"]
+                         if r["status"] == "succeeded" and (ts(r["startedAt"]) or prev_at) > prev_at),
+        "failed": sum(1 for rt in routines for r in rt["recent"]
+                      if r["status"] == "failed" and (ts(r["startedAt"]) or prev_at) > prev_at),
+    },
+}
+
+# --------------------------------------------------------------------------- what needs attention
+attention = []
+
+
+def flag(level, area, text, url=None):
+    attention.append({"level": level, "area": area, "text": text, "url": url})
+
+
+for wf in ci["main"]:
+    if wf["conclusion"] in ("failure", "timed_out", "startup_failure"):
+        # a required workflow (or any, when none is listed) red on the default branch is critical
+        flag("critical" if wf["required"] or not REQUIRED else "warn", "CI",
+             f"{wf['workflow']} is failing on {DEFAULT_BRANCH}", wf["url"])
+if e2e and e2e["main"] and e2e["main"]["conclusion"] == "failure":
+    bad = [j["name"] for j in e2e["main"]["jobs"] if j["conclusion"] == "failure"]
+    flag("critical", "Tests", f"{e2e['name']} fails on {DEFAULT_BRANCH} ({', '.join(bad) or 'see run'})", e2e["main"]["url"])
+for rt in routines:
+    last = rt["recent"][0] if rt["recent"] else None
+    if rt["health"] == "failed":
+        quota = bool(last and last.get("error") and "limit" in last["error"].lower())
+        flag("warn" if quota else "critical", "Routine",
+             f"{rt['title']}: last run failed" + (" (usage limit)" if quota else f": {last.get('error') or 'see the run'}"))
+    elif rt["health"] == "missed":
+        flag("warn", "Routine", f"{rt['title']}: a scheduled run was missed (app closed?)")
+for lk in locks:
+    if lk["kind"] == "failed":
+        flag("warn", "Routine", f"Issue developer stopped on #{lk['issue']}: {lk['note'] or lk['state']}", lk["url"])
+for p in prs:
+    if p["review"] == "do not merge":
+        flag("critical", "PR", f"#{p['number']} flagged 'do not merge' by the review routine", p["url"])
+    elif p["checks"] == "failing" and not p["draft"]:
+        flag("warn", "PR", f"#{p['number']} checks failing: {', '.join(p['failingChecks'][:3])}", p["url"])
+ci_wait = [p for p in prs if p["waitingOn"] == "You: approve the CI run"]
+if ci_wait:
+    flag("warn", "PR", "Approve CI for first-time contributors: " + ", ".join(f"#{p['number']}" for p in ci_wait), ci_wait[0]["url"])
+review_wait = [p for p in prs if p["waitingWho"] == "you" and p not in ci_wait]
+if review_wait:
+    flag("warn" if any((p["ageDays"] or 0) >= 3 for p in review_wait) else "info", "PR",
+         f"{len(review_wait)} PR(s) waiting for your review: " + ", ".join(f"#{p['number']}" for p in review_wait[:6]),
+         f"{GH}/pulls")
+routine_prs = [p for p in prs if p["isRoutine"]]
+if len(routine_prs) >= ROUTINE_PR_CAP:
+    flag("warn", "Routine", f"{len(routine_prs)} routine PRs open: the issue developer pauses at {ROUTINE_PR_CAP}",
+         f"{GH}/pulls?q=is%3Aopen+label%3Aclaude")
+for b in queues["blocked"]:
+    flag("warn", "Issue", f"#{b['number']} is blocked: {b['title']}", b["url"])
+if queues["proposals"]:
+    flag("info", "Issue", f"{len(queues['proposals'])} proposal(s) wait for your 'ready' decision",
+         f"{GH}/issues?q=is%3Aopen+label%3Aproposal")
+for ms in issues["milestones"]:
+    if ms["state"] == "done":
+        flag("critical", "Release", f"Milestone \"{ms['title']}\" is finished ({ms['closed']}/{ms['closed']} closed, "
+             f"{ms['closedSinceRelease']} since {repo['release']['tag'] or 'the last release'}): release it, then close the milestone",
+             RELEASE_URL)
+    elif ms["state"] == "developed" and ms["toMerge"]:
+        flag("warn", "Release", f"Milestone \"{ms['title']}\": every task is developed, merge "
+             + ", ".join(f"#{n}" for n in ms["toMerge"][:8]) + " to finish it", ms["url"])
+if unreleased and repo["release"]["daysAgo"] is not None and repo["release"]["daysAgo"] >= 7:
+    flag("info", "Release", f"{unreleased} unreleased changes, {repo['release']['tag']} is {repo['release']['daysAgo']} days old",
+         RELEASE_URL)
+if tests is not None:
+    if test_health["regressions"] and latest_test_run:
+        on_main = latest_test_run["branch"] == DEFAULT_BRANCH
+        names = ", ".join(f"{r['scenario']} on {r['os']}" for r in test_health["regressions"][:4])
+        flag("critical" if on_main else "warn", "Tests",
+             f"{len(test_health['regressions'])} test regression(s) on {latest_test_run['branch']}: {names}", latest_test_run["url"])
+    if test_health["flaky"]:
+        flag("info", "Tests", f"{len(test_health['flaky'])} flaky test(s): "
+             + ", ".join(f"{r['scenario']} on {r['os']}" for r in test_health["flaky"][:4]))
+    failing_checks = [c["name"] for c in checks if c["last"] == "F"]
+    if failing_checks:
+        flag("warn", "Tests", f"{tests['checksName'] or 'Check'} steps failing in the latest run: " + ", ".join(failing_checks))
+for e in errors:
+    flag("info", "Data", f"Not collected: {e}")
+rank = {"critical": 0, "warn": 1, "info": 2}
+attention.sort(key=lambda a: rank[a["level"]])
+status = "critical" if any(a["level"] == "critical" for a in attention) else \
+         "attention" if any(a["level"] == "warn" for a in attention) else "ok"
+
+# --------------------------------------------------------------------------- trend
+local_now = NOW.astimezone(TZ)
+slot = "morning" if local_now.hour < 14 else "evening"
+point = {
+    "at": iso(NOW),
+    "slot": f"{local_now:%Y-%m-%d}-{'am' if slot == 'morning' else 'pm'}",
+    "openPrs": len(prs),
+    "openIssues": issues["open"],
+    "openBugs": by_type["bug"],
+    "highPriority": by_prio["high"],
+    "ciPassRate": ci["passRate7d"],
+    "commits7d": sum(d["commits"] for d in list(days.values())[-7:]),
+    "attention": sum(a["level"] != "info" for a in attention),
+}
+trend = [p for p in prev.get("trend", []) if isinstance(p, dict) and p.get("slot") != point["slot"]] + [point]
+trend = trend[-TREND_POINTS:]
+
+# next refresh: the first of refresh_times (in the board's timezone) after now
+cands = []
+for d in (0, 1):
+    day = (local_now + timedelta(days=d)).date()
+    for hh, mm in REFRESH_TIMES:
+        cands.append(datetime(day.year, day.month, day.day, hh, mm, tzinfo=TZ))
+next_refresh = min(c for c in cands if c > local_now)
+
+snapshot = {
+    "schema": 2,
+    "generatedAt": iso(NOW),
+    "slot": slot,
+    "nextRefresh": iso(next_refresh),
+    "status": status,
+    "board": {
+        "project": PROJECT,
+        "timezone": str(TZ),
+        "refreshTimes": [f"{h:02d}:{m:02d}" for h, m in REFRESH_TIMES],
+        "defaultBranch": DEFAULT_BRANCH,
+        "maintainers": [x for x in (ME, CO_MAINTAINER) if x],
+        "maintainer": ME or None,
+        "coMaintainer": CO_MAINTAINER or None,
+        "bot": f"{BOT}[bot]",
+        "routineTitle": f"{PROJECT}: Status board",
+    },
+    "attention": attention,
+    "repo": repo,
+    "prs": prs,
+    "issues": issues,
+    "ci": ci,
+    "activity": activity,
+    "routines": routines,
+    "locks": locks,
+    "changes": changes,
+    "trend": trend,
+    "errors": errors,
+}
+if tests is not None:
+    snapshot["e2e"] = e2e
+    snapshot["tests"] = tests
+
+OUT.mkdir(parents=True, exist_ok=True)
+body = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+if len(body.encode()) > 240_000 and tests is not None:  # the store refuses documents over 256 KiB: drop passing assertions first
+    for det in (tests["latest"], tests["main"]):
+        for cell in (det or {}).get("cells", {}).values():
+            cell["assertions"] = [a for a in cell["assertions"] if not a["ok"]]
+    tests["runs"] = tests["runs"][:25]
+    body = json.dumps(snapshot, ensure_ascii=False, separators=(",", ":"))
+if len(body.encode()) > 250_000:
+    print("status-board-collect: snapshot over 250 KB, not written", file=sys.stderr)
+    sys.exit(1)
+if prev_path.exists():
+    prev_path.replace(OUT / "previous.json")
+tmp = OUT / "snapshot.json.tmp"
+tmp.write_text(body)
+os.replace(tmp, prev_path)
+print(json.dumps({"file": str(prev_path), "bytes": len(body.encode()), "status": status,
+                  "attention": len(attention), "errors": errors}))

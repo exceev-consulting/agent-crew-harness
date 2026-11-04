@@ -54,10 +54,12 @@ flowchart LR
 | bug-hunter | weekly | Reviews one area of the code per week, files proven bugs |
 | bug-fixer | twice a week | Fixes one bug a maintainer or the harness filed (off by default) |
 | market-research | weekly | Watches users, upstreams and competitors, opens up to 2 proposals |
+| feature-planner | twice a week | The product owner: specifies ideas you label `needs-spec` (user story, acceptance criteria, sub-issues) and proposes missing features weekly. Never code |
 | sentinel | every 30 min | Telegram and desktop alerts: critical issues, advisories, "do not merge", red default branch, failing routines |
 | hotfix-developer | every 30 min | Develops a `priority: critical` issue at once, once you add `agent-ready` |
 | hotfix-review | hourly | Reviews critical pull requests at once |
 | security-watch | every 2 h | New CVEs from GitHub advisories, OSV (Debian/Ubuntu), NVD and CISA KEV for your components |
+| status-board | twice a day | Refreshes the status board, a Claude artifact page: what needs you, PRs, issues, milestones, CI, tests, routine health |
 
 Each routine has a version (`routine.json` and the last line of its prompt). The installer records what you installed
 and shows what an update changes.
@@ -98,7 +100,7 @@ To update later: `git pull`, then ask Claude Code to update the harness. It show
 - [Security model](docs/security-model.md): what an agent can and cannot do, and why.
 - [Profile](docs/profile.md): the sections of `PROFILE.md`. Examples: [server-prep](profiles/server-prep/PROFILE.md),
   [this repository](profiles/agent-crew-harness/PROFILE.md).
-- [Hotfix lane](docs/hotfix-lane.md), [Security watch](docs/security-watch.md), [Telegram](docs/telegram.md),
+- [Hotfix lane](docs/hotfix-lane.md), [Security watch](docs/security-watch.md), [Status board](docs/status-board.md), [Telegram](docs/telegram.md),
   [Labels](docs/labels.md), [Writing a routine](docs/routine-format.md), [Maintaining this repository with itself](docs/self-hosting.md).
 
 ## License

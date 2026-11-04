@@ -1,0 +1,12 @@
+{
+  "name": "feature-planner",
+  "title": "Feature planner",
+  "description": "Twice a week: turns ideas a maintainer labelled needs-spec into specified issues and sub-issues, and proposes missing features once a week. Writes issues, never code.",
+  "cron": "7 10 * * 1,4",
+  "enabled_by_default": true,
+  "requires": ["bot_app"],
+  "optional": [],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "The business side of the crew (product owner). It replaces the production feature-builder routine, which developed ready issues and is now covered by issue-developer. Add the needs-spec label to an idea to get a specification."
+}

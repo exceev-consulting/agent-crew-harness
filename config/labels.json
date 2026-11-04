@@ -85,6 +85,11 @@
   "name": "needs-rebase"
  },
  {
+  "name": "needs-spec",
+  "color": "c5def5",
+  "description": "A maintainer asks the feature-planner routine to write the specification"
+ },
+ {
   "color": "b60205",
   "description": "Breaks servers or security now: fix first",
   "name": "priority: critical"

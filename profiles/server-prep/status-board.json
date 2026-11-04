@@ -1,0 +1,28 @@
+{
+  "timezone": "Europe/Paris",
+  "refresh_times": ["08:30", "19:30"],
+  "changelog": "CHANGELOG.md",
+  "release_workflow": "release.yml",
+  "ci": {
+    "workflows": [
+      {"name": "lint", "file": "lint.yml", "required": true},
+      {"name": "e2e", "file": "e2e.yml", "required": false}
+    ],
+    "show_other_workflows": true
+  },
+  "tests": {
+    "name": "e2e",
+    "workflow": "e2e.yml",
+    "artifact_prefix": "e2e-vm-",
+    "results_file": "results.json",
+    "format": "scenarios-v1",
+    "ignore_jobs": ["setup", "report"],
+    "checks_workflow": "lint.yml",
+    "description": "Each system boots in a KVM VM from its cloud image and runs server-preconfig, server-prep and the audit.",
+    "report": {
+      "url": "https://exceev-consulting.github.io/server-prep/e2e/",
+      "main": "main/",
+      "pr": "pr-{pr}/"
+    }
+  }
+}

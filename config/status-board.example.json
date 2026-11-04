@@ -1,0 +1,12 @@
+{
+  "timezone": "UTC",
+  "refresh_times": ["08:30", "19:30"],
+  "changelog": "CHANGELOG.md",
+  "release_workflow": null,
+  "ci": {
+    "workflows": [
+      {"name": "ci", "file": "ci.yml", "required": true}
+    ],
+    "show_other_workflows": true
+  }
+}

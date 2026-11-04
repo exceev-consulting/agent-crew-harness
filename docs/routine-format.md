@@ -19,7 +19,7 @@ A routine is a folder `routines/<name>/` with two files.
 `requires` lists what the routine cannot work without; `optional` what it uses when present and skips otherwise. Both
 take: `bot_app`, `review_app`, `telegram`, `workflow` (the routine runs `workflows/develop-issue.js` in ultracode mode),
 `org_projects` (the app needs the organisation permission Projects), `issue_fields` (organisation issue fields),
-`actions_write` (the app re-runs workflows). `skills` lists the Claude Code skills it calls (read-only skills only run
+`actions_write` (the app re-runs workflows), `artifact` (a published Claude artifact, such as the status board). `skills` lists the Claude Code skills it calls (read-only skills only run
 in an isolated subagent: RULES.md).
 
 ## SKILL.md

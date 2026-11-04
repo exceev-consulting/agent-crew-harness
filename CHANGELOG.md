@@ -4,6 +4,14 @@ Each routine has its own version (`routine.json`); a routine change names the ro
 
 ## [Unreleased]
 
+- New routine feature-planner 1.0.0: the crew's product owner. It specifies ideas a maintainer labels `needs-spec`
+  (user story, acceptance criteria, how to verify, sub-issues) and proposes missing features weekly. It never writes code.
+  New standard label `needs-spec`.
+
+- New routine status-board 1.0.0: refreshes the status board, a Claude artifact page (pull requests and who they wait
+  on, issues, milestones and their release signal, CI, optional end-to-end test results, routine health), twice a day.
+  Helper `bin/status-board-collect` with tests, settings in `status-board.json`, page source in `status-board/`.
+
 ## [0.1.0]
 
 - First public version. 14 routines at 1.0.0: issue-triage, issue-developer, pr-review, review-fixer, conflict-fixer,

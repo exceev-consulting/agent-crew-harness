@@ -27,7 +27,7 @@ KEYS = {"project", "repo", "repo_owner", "repo_name", "default_branch", "main_cl
         "tasks_dir", "task_prefix", "maintainer", "co_maintainer", "git_author", "bot_app", "bot_user_id", "review_app",
         "release_app", "canary", "app_process"}
 SKILLS = {"code-review", "security-review", "simplify"}
-REQUIRES = {"bot_app", "review_app", "telegram", "workflow", "org_projects", "issue_fields", "actions_write"}
+REQUIRES = {"bot_app", "review_app", "telegram", "workflow", "org_projects", "issue_fields", "actions_write", "artifact"}
 SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
 SECTIONS = ["Project", "Read first", "Machine safety", "Safe commands", "CI checks", "Protected paths", "Release",
             "Conventions", "Code review checklist", "Security review checklist", "Vulnerabilities", "Labels", "Milestones",

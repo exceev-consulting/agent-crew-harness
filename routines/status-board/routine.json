@@ -1,0 +1,13 @@
+{
+  "name": "status-board",
+  "title": "Status board",
+  "description": "Twice a day (08:30, 19:30): collects pull requests, issues, milestones, CI, test results and the routines' runs into one snapshot and writes it to the status board artifact's database. Read-only everywhere else.",
+  "cron": "30 8,19 * * *",
+  "enabled_by_default": true,
+  "requires": [
+    "artifact"
+  ],
+  "skills": [],
+  "version": "1.0.0",
+  "notes": "The installer builds and publishes the page first (docs/status-board.md) and saves its URL as status_board_artifact in harness.json; without it each run stops at once. Settings in status-board.json next to bin/ (timezone, CI workflows, optional test results)."
+}

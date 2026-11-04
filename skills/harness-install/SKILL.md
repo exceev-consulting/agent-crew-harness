@@ -110,6 +110,22 @@ On a yes: copy `<harness_dir>/systemd/*` to `~/.config/systemd/user/`, `systemct
 `systemctl --user enable --now <task_prefix>watchdog.timer`, and `loginctl enable-linger "$USER"` so it runs while the
 user is logged out. It alerts on Telegram when the Claude app is down or the sentinel or security watch stopped.
 
+## Status board (optional)
+
+A page that shows the repository and the routines at a glance (docs/status-board.md in HREPO). On a yes:
+1. Settings: copy `HREPO/profiles/<name>/status-board.json` when it exists, else `HREPO/config/status-board.example.json`,
+   to `<harness_dir>/status-board.json`, and adapt with the user: the timezone of this machine, the CI workflows (which
+   one is required), and a `tests` block only if the project uploads test results in the documented format.
+2. Build the page: `cd HREPO/status-board/app && pnpm install --frozen-lockfile`, then
+   `HARNESS_CONFIG=<harness_dir>/harness.json HREPO/status-board/build.sh`. It writes
+   `HREPO/status-board/dist/status-board.html`.
+3. Publish it: load the `artifact-capabilities` and `artifact-design` skills first, as the Artifact tool asks, then
+   publish `HREPO/status-board/dist/status-board.html` with the Artifact tool and the `db` capability (the page reads
+   the document `snapshot/latest`; the routine writes it). Give the user the link.
+4. Save the artifact's URL in `<harness_dir>/harness.json` as `status_board_artifact`.
+5. Create the `status-board` routine as in step 9 (its `requires` is `artifact`: never before steps 3 and 4), then
+   offer to run it once now so the page fills.
+
 ## 11. Doctor
 
 `<harness_dir>/bin/harness-doctor` must end with 0 FAIL. Explain each WARN in one line. Finish with: the routines
