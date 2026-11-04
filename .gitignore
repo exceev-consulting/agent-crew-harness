@@ -3,3 +3,4 @@ __pycache__/
 /harness.json
 /out/
 .DS_Store
+/HANDOFF.md
