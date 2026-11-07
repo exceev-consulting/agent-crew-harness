@@ -14,6 +14,9 @@ Each routine has its own version (`routine.json`); a routine change names the ro
   on, issues, milestones and their release signal, CI, optional end-to-end test results, routine health), twice a day.
   Helper `bin/status-board-collect` with tests, settings in `status-board.json`, page source in `status-board/`.
 
+- Status board: the unused `html-inline` build dependency is removed, and with it two old `minimist` versions with
+  known prototype pollution flaws (Dependabot alerts 1 to 4). Build only: the page itself never contained them.
+
 ## [0.1.0]
 
 - First public version. 14 routines at 1.0.0: issue-triage, issue-developer, pr-review, review-fixer, conflict-fixer,
