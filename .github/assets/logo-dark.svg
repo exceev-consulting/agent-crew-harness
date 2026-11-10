@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="agent-crew-harness">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#E6EDF3"/>
+  <path d="M32 14 L48 23 V41 L32 50 L16 41 V23 Z" fill="none" stroke="#0B1117" stroke-width="3" stroke-linejoin="round"/>
+  <circle cx="32" cy="24" r="4.5" fill="#1A7F37"/>
+  <circle cx="24" cy="37" r="4.5" fill="#0B1117"/>
+  <circle cx="40" cy="37" r="4.5" fill="#0B1117"/>
+  <path d="M32 28.5 L25.5 33 M32 28.5 L38.5 33 M28.5 37 H35.5" stroke="#0B1117" stroke-width="2" stroke-linecap="round"/>
+</svg>

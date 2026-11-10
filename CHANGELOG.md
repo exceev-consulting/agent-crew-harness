@@ -4,6 +4,10 @@ Each routine has its own version (`routine.json`); a routine change names the ro
 
 ## [Unreleased]
 
+- Project setup like a mature open-source project: Code of Conduct, governance, roadmap, support, CODEOWNERS, issue and
+  discussion forms, a richer pull request template, release notes grouped by label, `.editorconfig`, a logo, and a
+  one-button release workflow (`VERSION`, plugin version, CHANGELOG, signed tag, source archive and `SHA256SUMS`).
+
 - New routine feature-planner 1.0.0: the crew's product owner. It specifies ideas a maintainer labels `needs-spec`
   (user story, acceptance criteria, how to verify, sub-issues), specifies the market-research routine's proposals
   without a label (market-research now marks them and points to it), and proposes missing features weekly. It never

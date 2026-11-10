@@ -35,3 +35,29 @@ script.
 
 Title: `<area or file>: <what changes>` (`pr-review: check workflow permissions`). One topic per pull request.
 Pull requests are squash-merged.
+
+## Releases (maintainers)
+
+One button: **Actions → release → Run workflow**, then choose `patch` (fixes), `minor` (new features) or `major`
+(breaking changes). From a terminal: `gh workflow run release -f bump=patch`.
+
+The workflow:
+1. bumps `VERSION` and the plugin version, moves the `[Unreleased]` notes under the new version in `CHANGELOG.md`, runs
+   the same checks as CI, and puts that `release: vX.Y.Z` commit straight on `main`;
+2. tags that commit and publishes the GitHub release: the changelog notes, the merged pull requests grouped by label
+   (`.github/release.yml`), a source archive and a `SHA256SUMS` file.
+
+`main` only takes approved pull requests. The one exception is the release GitHub App, which only this workflow uses: it
+is on `main`'s bypass list, and its client ID (`RELEASE_APP_CLIENT_ID`, a variable) and private key
+(`RELEASE_APP_PRIVATE_KEY`, a secret) live in the `release` environment, which only `main` can use. The app has
+**Contents: read and write** on this repository and nothing else. Routines keep their own versions (`routine.json`).
+
+## Community
+
+How the project is run: [GOVERNANCE.md](GOVERNANCE.md). Where to get help: [SUPPORT.md](SUPPORT.md). What comes next:
+[ROADMAP.md](ROADMAP.md).
+
+## License
+
+By contributing, you agree that your work is released under the [MIT License](LICENSE). Everyone taking part follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).

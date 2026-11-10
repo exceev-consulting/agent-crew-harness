@@ -1,4 +1,30 @@
-# agent-crew-harness
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset=".github/assets/logo-dark.svg">
+    <img src=".github/assets/logo.svg" width="72" height="72" alt="agent-crew-harness logo">
+  </picture>
+</p>
+
+<h1 align="center">agent-crew-harness</h1>
+
+<p align="center">
+  <b>A crew of Claude Code agents that runs your repository like a full tech and business team.</b><br>
+  Triage · development of approved issues · reviews · CI diagnosis · security watch · hotfix lane · you stay in control
+</p>
+
+<p align="center">
+  <a href="https://github.com/exceev-consulting/agent-crew-harness/actions/workflows/ci.yml"><img src="https://github.com/exceev-consulting/agent-crew-harness/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://github.com/exceev-consulting/agent-crew-harness/releases/latest"><img src="https://img.shields.io/github/v/release/exceev-consulting/agent-crew-harness?include_prereleases" alt="latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-0B1117.svg" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="docs/architecture.md">Docs</a> ·
+  <a href="https://github.com/exceev-consulting/agent-crew-harness/discussions">Discussions</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
+  <a href="SECURITY.md">Security</a>
+</p>
 
 A crew of Claude Code agents that runs your repository like a full tech and business team, in a harness that keeps you
 in control. The routines maintain a GitHub repository with you: they triage issues, develop the ones you approve,
@@ -73,13 +99,13 @@ Requirements: Linux with systemd, the Claude Code desktop app (scheduled tasks),
 `curl`, `python3`, `openssl`, `node`.
 
 ```bash
-git clone https://github.com/<owner>/agent-crew-harness.git ~/src/agent-crew-harness
+git clone https://github.com/exceev-consulting/agent-crew-harness.git ~/src/agent-crew-harness
 ```
 
 Or install only the skills as a Claude Code plugin (Claude Code 2.1.275 or later):
 
 ```text
-/plugin install agent-crew-harness --marketplace <owner>/agent-crew-harness
+/plugin install agent-crew-harness --marketplace exceev-consulting/agent-crew-harness
 ```
 
 Open Claude Code in that folder, in a session with Bypass permissions (scheduled tasks keep the mode of the session that

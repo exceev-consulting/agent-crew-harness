@@ -98,7 +98,8 @@ A stricter default that closes no known path is a public hardening idea labelled
   size `size: S|M|L`, as in the routines' standard set.
 - Areas from changed paths: `routines/` -> `area: routines`; `bin/`, `lib/` -> `area: helpers`; `core/` -> `area: rules`;
   `profiles/` -> `area: profiles`; `skills/` -> `area: installer`; `docs/`, `README.md` -> `area: docs`;
-  `.github/`, `tests/` -> `area: ci`.
+  `.github/`, `tests/` -> `area: ci`; `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, the pull request template
+  and the root community files (`CONTRIBUTING.md`, `GOVERNANCE.md`, `ROADMAP.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`) -> `area: docs`.
 - Project board: None.
 
 ## Milestones
