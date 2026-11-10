@@ -73,13 +73,13 @@ Requirements: Linux with systemd, the Claude Code desktop app (scheduled tasks),
 `curl`, `python3`, `openssl`, `node`.
 
 ```bash
-git clone https://github.com/<owner>/agent-crew-harness.git ~/src/agent-crew-harness
+git clone https://github.com/exceev-consulting/agent-crew-harness.git ~/src/agent-crew-harness
 ```
 
 Or install only the skills as a Claude Code plugin (Claude Code 2.1.275 or later):
 
 ```text
-/plugin install agent-crew-harness --marketplace <owner>/agent-crew-harness
+/plugin install agent-crew-harness --marketplace exceev-consulting/agent-crew-harness
 ```
 
 Open Claude Code in that folder, in a session with Bypass permissions (scheduled tasks keep the mode of the session that
