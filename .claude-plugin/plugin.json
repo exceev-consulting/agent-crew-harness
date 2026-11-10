@@ -5,6 +5,8 @@
   "author": {
     "name": "Exceev Consulting"
   },
+  "homepage": "https://github.com/exceev-consulting/agent-crew-harness",
+  "repository": "https://github.com/exceev-consulting/agent-crew-harness",
   "license": "MIT",
   "keywords": [
     "routines",
