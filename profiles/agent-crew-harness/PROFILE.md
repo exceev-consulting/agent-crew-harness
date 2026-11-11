@@ -48,7 +48,9 @@ not do before.
 
 ## Release
 
-Maintainers tag `vX.Y.Z` and publish the GitHub release; routines never tag. Each routine has its own version in
+Maintainers release with the `release` workflow (`gh workflow run release -f bump=patch|minor|major`, see
+CONTRIBUTING.md, Releases). It alone changes `VERSION`, the plugin version in `.claude-plugin/plugin.json` and the
+version headings of `CHANGELOG.md`; routines never change them and never tag. Each routine has its own version in
 `routine.json` and in the last line of its `SKILL.md` (`<!-- harness-routine <name> vX.Y.Z -->`): a pull request that
 changes a routine bumps it (patch: wording; minor: a new step or check; major: a change in what the routine may write
 or who it acts for) and adds a line to `CHANGELOG.md`. Users update with `git pull` and the installer skill, which
@@ -100,6 +102,7 @@ A stricter default that closes no known path is a public hardening idea labelled
   `profiles/` -> `area: profiles`; `skills/` -> `area: installer`; `docs/`, `README.md` -> `area: docs`;
   `.github/`, `tests/` -> `area: ci`; `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, the pull request template
   and the root community files (`CONTRIBUTING.md`, `GOVERNANCE.md`, `ROADMAP.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`) -> `area: docs`.
+  When two entries match one file, the more specific path wins (`.github/ISSUE_TEMPLATE/config.yml` -> `area: docs`).
 - Project board: None.
 
 ## Milestones
