@@ -41,10 +41,10 @@ Every `run:` command of `.github/workflows/ci.yml`: syntax of shell and Python f
 
 ## Protected paths
 
-`.github/workflows/`, `.claude/settings*.json`, `.claude/hooks/`, `.mcp.json`, `SECURITY.md`. Changes to
-`core/RULES.md`, `bin/bot-gh`, `bin/review-gh`, `bin/scan-private` and any routine's "Routine rules" are allowed, but only
-in a pull request labelled `security` that says in its first line what an agent can do after the change that it could
-not do before.
+`.github/workflows/`, `.github/CODEOWNERS`, `.claude/settings*.json`, `.claude/hooks/`, `.mcp.json`, `SECURITY.md`.
+Changes to `core/RULES.md`, `bin/bot-gh`, `bin/review-gh`, `bin/scan-private` and any routine's "Routine rules" are
+allowed, but only in a pull request labelled `security` that says in its first line what an agent can do after the
+change that it could not do before.
 
 ## Release
 
