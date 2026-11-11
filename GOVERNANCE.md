@@ -28,7 +28,7 @@ The current maintainers are listed in [.github/CODEOWNERS](.github/CODEOWNERS). 
 
 Only maintainers release, through the release workflow. See [Releases (maintainers)](CONTRIBUTING.md#releases-maintainers).
 
-Nobody pushes to `main`. Every change goes through a pull request.
+Nobody pushes to `main` by hand. Every change goes through a pull request; the one exception is the release workflow's version commit.
 
 ## Security reports
 
