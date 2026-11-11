@@ -2,7 +2,7 @@
   "timezone": "Europe/Paris",
   "refresh_times": ["08:30", "19:30"],
   "changelog": "CHANGELOG.md",
-  "release_workflow": null,
+  "release_workflow": "release.yml",
   "ci": {
     "workflows": [
       {"name": "ci", "file": "ci.yml", "required": true}
