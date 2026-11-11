@@ -7,7 +7,8 @@ after this change that it could not do before. -->
 
 - [ ] `HARNESS_CONFIG=tests/fixtures/harness.json bin/harness-render --lint`
 - [ ] `for t in tests/*.sh; do bash "$t" || exit 1; done`
-- [ ] A changed routine: rendered and read once (`bin/harness-render --render <dir>`), or run on a test repository
+- [ ] A changed routine: rendered and read once
+  (`HARNESS_CONFIG=tests/fixtures/harness.json bin/harness-render --render "$(mktemp -d)"`), or run on a test repository
 
 ## Checklist
 
