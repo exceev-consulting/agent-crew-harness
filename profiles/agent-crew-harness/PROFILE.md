@@ -100,8 +100,10 @@ A stricter default that closes no known path is a public hardening idea labelled
   size `size: S|M|L`, as in the routines' standard set.
 - Areas from changed paths: `routines/` -> `area: routines`; `bin/`, `lib/` -> `area: helpers`; `core/` -> `area: rules`;
   `profiles/` -> `area: profiles`; `skills/` -> `area: installer`; `docs/`, `README.md` -> `area: docs`;
-  `.github/`, `tests/` -> `area: ci`; `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`, the pull request template
-  and the root community files (`CONTRIBUTING.md`, `GOVERNANCE.md`, `ROADMAP.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`) -> `area: docs`.
+  `.github/`, `tests/`, `.editorconfig` -> `area: ci`; `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`,
+  `.github/assets/`, the pull request template and the root community files (`CONTRIBUTING.md`, `GOVERNANCE.md`,
+  `ROADMAP.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) -> `area: docs`. `CHANGELOG.md` adds no area: almost
+  every pull request changes it.
   When two entries match one file, the more specific path wins (`.github/ISSUE_TEMPLATE/config.yml` -> `area: docs`).
 - Project board: None.
 
