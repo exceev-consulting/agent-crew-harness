@@ -1,0 +1,141 @@
+name: release
+
+# One button: Actions → release → Run workflow → patch / minor / major
+# (or: gh workflow run release -f bump=patch).
+#  1. bumps VERSION and the plugin version (.claude-plugin/plugin.json), and moves the CHANGELOG.md [Unreleased] notes
+#     under the new version, in one commit put straight on main. main only takes approved pull requests: the release
+#     GitHub App is its one exception (bypass list), and the app's key lives in the "release" environment
+#     (RELEASE_APP_CLIENT_ID variable, RELEASE_APP_PRIVATE_KEY secret), which only main can use;
+#  2. tags that commit and publishes the release: the CHANGELOG notes, the merged pull requests grouped by label
+#     (.github/release.yml), a source archive and SHA256SUMS.
+# The commit and the tag go through the GitHub API, so GitHub signs them (Verified).
+# Routines keep their own versions (routine.json): this release versions the harness as a whole.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "patch = fixes, minor = new features, major = breaking changes"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+
+permissions:
+  contents: write
+  checks: write
+
+concurrency:
+  group: release
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+      BUMP: ${{ inputs.bump }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Next version
+        run: |
+          cur=$(tr -d '[:space:]' < VERSION)
+          IFS=. read -r major minor patch <<<"$cur"
+          case "$BUMP" in
+            major) new="$((major + 1)).0.0" ;;
+            minor) new="$major.$((minor + 1)).0" ;;
+            *)     new="$major.$minor.$((patch + 1))" ;;
+          esac
+          if git rev-parse -q --verify "refs/tags/v$new" >/dev/null; then
+            echo "::error::tag v$new already exists"; exit 1
+          fi
+          echo "VERSION=$new" >> "$GITHUB_ENV"
+          echo "Release: $cur -> $new"
+
+      - name: Update VERSION, plugin.json and CHANGELOG.md
+        run: |
+          grep -q '^## \[Unreleased\]' CHANGELOG.md || { echo "::error::no '## [Unreleased]' section in CHANGELOG.md"; exit 1; }
+          awk '/^## \[/ { if (found) exit; found = ($0 ~ /^## \[Unreleased\]/); next } found' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          empty=0; grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md" || empty=1
+          echo "$VERSION" > VERSION
+          jq --arg v "$VERSION" '.version = $v' .claude-plugin/plugin.json > "$RUNNER_TEMP/plugin.json"
+          mv "$RUNNER_TEMP/plugin.json" .claude-plugin/plugin.json
+          awk -v v="$VERSION" -v d="$(date -u +%F)" -v empty="$empty" \
+              -v url="https://github.com/$REPO/releases/tag/v$VERSION" '
+            !done && /^## \[Unreleased\]/ {
+              print; print ""; print "## [" v "] - " d
+              if (empty) { print ""; print "- Maintenance release: see the [release notes](" url ")." }
+              done = 1; next
+            }
+            { print }' CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.md"
+          mv "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
+          git diff
+
+      - name: Checks (the same as ci)
+        env:
+          HARNESS_CONFIG: tests/fixtures/harness.json
+        run: |
+          mapfile -t sh < <(grep -lE '^#!/usr/bin/env bash' bin/* tests/*.sh lib/*.sh status-board/build.sh 2>/dev/null; ls lib/harness.sh)
+          for f in "${sh[@]}"; do bash -n "$f"; done
+          shellcheck -S warning -x "${sh[@]}"
+          bin/harness-render --lint
+          for t in tests/*.sh; do echo "== $t"; bash "$t"; done
+
+      - name: Token of the release app
+        id: release-app
+        # Pinned to a commit, not a tag: this step handles the app's private key. Dependabot updates it.
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write   # only to move main; this repository only
+
+      - name: Put the version bump on main
+        env:
+          RELEASE_TOKEN: ${{ steps.release-app.outputs.token }}
+        run: |
+          base=$(git rev-parse HEAD)
+          tree=$(jq -n --arg base "$(git rev-parse 'HEAD^{tree}')" \
+                   --rawfile ver VERSION --rawfile plugin .claude-plugin/plugin.json --rawfile log CHANGELOG.md \
+                   '{base_tree: $base, tree: [
+                     {path: "VERSION",                    mode: "100644", type: "blob", content: $ver},
+                     {path: ".claude-plugin/plugin.json", mode: "100644", type: "blob", content: $plugin},
+                     {path: "CHANGELOG.md",               mode: "100644", type: "blob", content: $log}]}' \
+                 | gh api "repos/$REPO/git/trees" --input - --jq .sha)
+          # no author/committer fields, so GitHub signs it as github-actions[bot]
+          commit=$(jq -n --arg msg "release: v$VERSION" --arg tree "$tree" --arg parent "$base" \
+                     '{message: $msg, tree: $tree, parents: [$parent]}' \
+                   | gh api "repos/$REPO/git/commits" --input - --jq .sha)
+          # the step above ran the ci checks on exactly these files: report it as the required "ci" check
+          gh api "repos/$REPO/check-runs" -f name=ci -f head_sha="$commit" -f status=completed \
+            -f conclusion=success -f 'output[title]=Checked by the release workflow' \
+            -f 'output[summary]=bash -n, shellcheck -S warning, harness-render --lint and tests/*.sh passed' >/dev/null
+          # main only takes approved pull requests; the release app is its one exception. A plain
+          # fast-forward: if main moved during the run, this fails and nothing changes.
+          if ! GH_TOKEN="$RELEASE_TOKEN" gh api -X PATCH "repos/$REPO/git/refs/heads/main" \
+                 -f sha="$commit" -F force=false >/dev/null; then
+            echo "::error::main did not take the release commit: main changed during the run (run the workflow again), or the release app is not on main's bypass list"
+            exit 1
+          fi
+          echo "RELEASE_COMMIT=$commit" >> "$GITHUB_ENV"
+
+      - name: Tag and publish the release
+        run: |
+          git fetch -q origin main && git reset -q --hard "$RELEASE_COMMIT"
+          mkdir dist
+          git archive --format=tar.gz --prefix="agent-crew-harness-$VERSION/" \
+            -o "dist/agent-crew-harness-$VERSION.tar.gz" "$RELEASE_COMMIT"
+          (cd dist && sha256sum -- * > SHA256SUMS)
+          # annotated tag made through the API: signed by GitHub
+          tag=$(gh api "repos/$REPO/git/tags" -f tag="v$VERSION" -f message="agent-crew-harness $VERSION" \
+                  -f object="$RELEASE_COMMIT" -f type=commit --jq .sha)
+          gh api "repos/$REPO/git/refs" -f ref="refs/tags/v$VERSION" -f sha="$tag" >/dev/null
+          args=(--verify-tag --title "agent-crew-harness v$VERSION" --generate-notes)
+          if grep -q '[^[:space:]]' "$RUNNER_TEMP/notes.md"; then args+=(--notes-file "$RUNNER_TEMP/notes.md"); fi
+          gh release create "v$VERSION" "${args[@]}" dist/*

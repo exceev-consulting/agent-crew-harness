@@ -1,0 +1,66 @@
+name: Bug report
+description: A routine, helper or the installer did something wrong
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **Remove secrets before posting**: tokens, app private keys, Telegram tokens, real hosts, IPs and names.
+        A security problem (an agent acting on untrusted text, a way around the two-key rule, a leaked secret)? Use [Report a vulnerability](https://github.com/exceev-consulting/agent-crew-harness/security/advisories/new) instead.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - A routine
+        - A helper (bin/, lib/)
+        - Ground rules (core/RULES.md)
+        - A profile
+        - Installer or skills (harness-install, harness-profile, harness-doctor)
+        - Status board
+        - Watchdog or Telegram
+        - Docs
+    validations:
+      required: true
+  - type: input
+    id: routine
+    attributes:
+      label: Routine or helper, and its version
+      description: "`bin/harness-render --status` lists the installed versions"
+      placeholder: pr-review 1.0.0, bin/notify
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Harness version
+      description: The `VERSION` file, or the commit you installed from
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and Claude Code version
+      placeholder: Ubuntu 24.04, Claude Code desktop 2.1.x
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: run
+    attributes:
+      label: Run summary or output
+      description: The routine's run summary, or the helper's output. `bin/harness-doctor` output helps too.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I removed tokens, keys, hosts, IPs and names from this report
+          required: true

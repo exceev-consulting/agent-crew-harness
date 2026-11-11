@@ -1,0 +1,39 @@
+title: "[Help] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for asking. **Remove secrets before posting**: tokens, app private keys, Telegram tokens, real hosts, IPs and names.
+        Found a security problem? Use [Report a vulnerability](https://github.com/exceev-consulting/agent-crew-harness/security/advisories/new) instead.
+        Many answers are in the [docs](https://github.com/exceev-consulting/agent-crew-harness/tree/main/docs). `bin/harness-doctor` finds most install problems.
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to do, and what happens instead?
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: OS and Claude Code version
+      placeholder: Ubuntu 24.04, Claude Code desktop 2.1.x
+    validations:
+      required: true
+  - type: input
+    id: routines
+    attributes:
+      label: Routines and versions involved
+      placeholder: issue-triage 1.0.0, pr-review 1.0.0
+  - type: textarea
+    id: output
+    attributes:
+      label: Run summary or harness-doctor output
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before posting
+      options:
+        - label: I removed tokens, keys, hosts, IPs and names
+          required: true

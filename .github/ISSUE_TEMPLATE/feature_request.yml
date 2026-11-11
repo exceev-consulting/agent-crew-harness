@@ -1,0 +1,44 @@
+name: Idea or feature request
+description: A new routine, check, helper, profile or option
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Check the [roadmap](https://github.com/exceev-consulting/agent-crew-harness/blob/main/ROADMAP.md) first. A maintainer may add `needs-spec`: the feature-planner routine then writes the spec on this issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      placeholder: When my repository gets ..., I have to ... by hand.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What the harness should do. Who acts (which routine), what it reads, what it may write.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - A new routine
+        - An existing routine
+        - A helper (bin/, lib/)
+        - Ground rules (core/RULES.md)
+        - Profiles
+        - Installer or skills
+        - Status board
+        - Docs
+        - Not sure
+  - type: dropdown
+    id: pr
+    attributes:
+      label: Would you like to send a pull request?
+      options:
+        - "Yes"
+        - Maybe, with some help
+        - "No"

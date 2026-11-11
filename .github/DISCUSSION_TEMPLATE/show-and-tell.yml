@@ -1,0 +1,32 @@
+title: "[Setup] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share a repository the crew maintains: which routines you run, what they caught, what you had to tune. **Remove secrets, private repository names and people you did not ask.**
+  - type: input
+    id: project
+    attributes:
+      label: Kind of project
+      placeholder: A Bash tool, a TypeScript library, a monorepo...
+    validations:
+      required: true
+  - type: input
+    id: routines
+    attributes:
+      label: Routines you run
+      placeholder: issue-triage, pr-review, pr-metadata, sentinel
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Harness version
+      placeholder: 0.1.0
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: What the routines did for you, and what you changed in your profile.
+    validations:
+      required: true

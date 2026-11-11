@@ -41,14 +41,16 @@ Every `run:` command of `.github/workflows/ci.yml`: syntax of shell and Python f
 
 ## Protected paths
 
-`.github/workflows/`, `.claude/settings*.json`, `.claude/hooks/`, `.mcp.json`, `SECURITY.md`. Changes to
-`core/RULES.md`, `bin/bot-gh`, `bin/review-gh`, `bin/scan-private` and any routine's "Routine rules" are allowed, but only
-in a pull request labelled `security` that says in its first line what an agent can do after the change that it could
-not do before.
+`.github/workflows/`, `.github/CODEOWNERS`, `.claude/settings*.json`, `.claude/hooks/`, `.mcp.json`, `SECURITY.md`.
+Changes to `core/RULES.md`, `bin/bot-gh`, `bin/review-gh`, `bin/scan-private` and any routine's "Routine rules" are
+allowed, but only in a pull request labelled `security` that says in its first line what an agent can do after the
+change that it could not do before.
 
 ## Release
 
-Maintainers tag `vX.Y.Z` and publish the GitHub release; routines never tag. Each routine has its own version in
+Maintainers release with the `release` workflow (`gh workflow run release -f bump=patch|minor|major`, see
+CONTRIBUTING.md, Releases). It alone changes `VERSION`, the plugin version in `.claude-plugin/plugin.json` and the
+version headings of `CHANGELOG.md`; routines never change them and never tag. Each routine has its own version in
 `routine.json` and in the last line of its `SKILL.md` (`<!-- harness-routine <name> vX.Y.Z -->`): a pull request that
 changes a routine bumps it (patch: wording; minor: a new step or check; major: a change in what the routine may write
 or who it acts for) and adds a line to `CHANGELOG.md`. Users update with `git pull` and the installer skill, which
@@ -98,7 +100,11 @@ A stricter default that closes no known path is a public hardening idea labelled
   size `size: S|M|L`, as in the routines' standard set.
 - Areas from changed paths: `routines/` -> `area: routines`; `bin/`, `lib/` -> `area: helpers`; `core/` -> `area: rules`;
   `profiles/` -> `area: profiles`; `skills/` -> `area: installer`; `docs/`, `README.md` -> `area: docs`;
-  `.github/`, `tests/` -> `area: ci`.
+  `.github/`, `tests/`, `.editorconfig` -> `area: ci`; `.github/ISSUE_TEMPLATE/`, `.github/DISCUSSION_TEMPLATE/`,
+  `.github/assets/`, the pull request template and the root community files (`CONTRIBUTING.md`, `GOVERNANCE.md`,
+  `ROADMAP.md`, `SUPPORT.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`) -> `area: docs`. `CHANGELOG.md` adds no area: almost
+  every pull request changes it.
+  When two entries match one file, the more specific path wins (`.github/ISSUE_TEMPLATE/config.yml` -> `area: docs`).
 - Project board: None.
 
 ## Milestones
