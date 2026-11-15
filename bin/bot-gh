@@ -90,11 +90,16 @@ for ((i = 0; i < ${#args[@]}; i++)); do
     esac
     # Short flags bundled in one argument (-aF, -iFkey=@file): gh reads letters until one takes a value.
     # A letter that reads local text must stand alone (-F <file>); -T, -e and pr -f are refused outright.
+    # For issue and pr every letter is read: one letter takes a value in a subcommand and not in another (-a: pr create
+    # --assignee, pr review --approve), so stopping early could let -aF <file> through. The cost: a value that looks
+    # like short flags (-Rorg/repo, a body that starts with "- ") is refused too, and must be written --flag=value.
     if [[ -n $risky && $a == -[!-]* ]]; then
         for ((j = 1; j < ${#a}; j++)); do
             l=${a:j:1}
             if [[ $l == ["$risky"] ]]; then
-                refuse "-$l reads local text bot-gh cannot check: write -F <file> on its own, or use --body-file"
+                refuse "-$l reads local text bot-gh cannot check: write -F <file> on its own, or use --body-file." \
+                    "If this argument is a flag's value (a body that starts with -, or -Rorg/repo), write it as" \
+                    "--flag=value (--body='- item', --repo=org/repo)"
             fi
             [[ -n $vals && $l == ["$vals"] ]] && break               # the rest of the argument is this flag's value
         done

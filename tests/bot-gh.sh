@@ -87,6 +87,8 @@ refused "pr create --fill-verbose"        pr create --fill-verbose
 refused "pr create -df (bundled)"         pr create -df
 refused "pr review -aF (bundled)"         pr review 1 -aF "$C"
 refused "api -iF (bundled)"               api repos/demo/repo/issues -iF "body=@$C"
+refused "a body that starts with - (read as -e)" issue comment 1 --body "- fixed"
+grep -q -- '--flag=value' "$T/err" && ok "the message says to write --flag=value" || bad "the message does not say --flag=value"
 refused "--body-file - (stdin)"           issue comment 1 --body-file -
 refused "-F - (stdin)"                    issue comment 1 -F -
 refused "api --input - (stdin)"           api graphql --input -
@@ -124,6 +126,7 @@ passes "api -f query=... with F in it"    api graphql -f 'query=mutation { Foo }
 passes "api -fquery=... (attached value)" api graphql '-fquery=mutation { Foo }'
 passes "api -f body=@x (raw, not a file)" api repos/demo/repo/issues -f 'body=@not-a-file'
 passes "-- as text"                       issue comment 1 --body x --
+passes "a body that starts with -, as --body=" issue comment 1 "--body=- fixed"
 passes "label create"                     label create demo --description "a label" --color 000000
 
 # gh may send a copy's path (label create -d -F <file>: -d takes -F as its value, the path becomes the label name),
