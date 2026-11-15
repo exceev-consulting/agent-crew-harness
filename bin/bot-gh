@@ -100,6 +100,11 @@ printf '%s\n' ${shown[@]+"${shown[@]}"} > "$tmp/args"
 for f in "$tmp/args" ${copies[@]+"${copies[@]}"}; do    # one by one: a pattern cannot hide across two files
     "$(dirname "$0")/scan-private" "$f" || exit $?
 done
+# gh can also send a copy's path: a flag that wants a value takes the file flag after it as that value, and the
+# path becomes the next argument (label create -d -F <file>). So the folder's path is checked like the rest.
+printf '%s\n' "$tmp" > "$tmp/path"
+"$(dirname "$0")/scan-private" "$tmp/path" 2>/dev/null ||
+    refuse "the temporary folder's path holds private details, and gh may send it: set TMPDIR to a neutral folder such as /tmp"
 
 if [[ ! -r $conf ]]; then
     echo "bot-gh: not configured ($conf missing)" >&2

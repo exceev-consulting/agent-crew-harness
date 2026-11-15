@@ -126,10 +126,12 @@ passes "api -f body=@x (raw, not a file)" api repos/demo/repo/issues -f 'body=@n
 passes "-- as text"                       issue comment 1 --body x --
 passes "label create"                     label create demo --description "a label" --color 000000
 
-# a TMPDIR whose path matches a private pattern: the copies' path is never scanned, nor sent
+# gh may send a copy's path (label create -d -F <file>: -d takes -F as its value, the path becomes the label name),
+# so a TMPDIR whose path matches a private pattern is refused, with a message that names TMPDIR
 mkdir -p "$T/DEMO-CANARY-0000"
-[[ $(TMPDIR="$T/DEMO-CANARY-0000" guard issue comment 1 --body-file "$C") == 3 ]] \
-    && ok "the temporary path is not part of the scanned text" || bad "temporary path scanned"
+TMPDIR="$T/DEMO-CANARY-0000" refused "a private TMPDIR (label create -d -F <file>)" label create -d -F "$C"
+grep -q TMPDIR "$T/err" && ok "the message says to set TMPDIR" || bad "the message does not name TMPDIR"
+TMPDIR="$T/DEMO-CANARY-0000" refused "a private TMPDIR (issue comment --body-file)" issue comment 1 --body-file "$C"
 
 # with a bot.env: gh gets the scanned copy, not the original path, and the copy is removed afterwards
 openssl genrsa -out "$T/key.pem" 2048 2>/dev/null
