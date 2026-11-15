@@ -15,36 +15,113 @@ set -euo pipefail
 repo=${HARNESS_BOT_REPO:-$(hconf repo)} || exit 3
 conf=${HARNESS_BOT_CONF:-$(hconf secrets_dir)/bot.env} || exit 3
 
-# Refuse to post private infrastructure details. What gets scanned is what GitHub would
-# receive: every argument except the paths of files passed with --body-file, --input or
-# field=@file (those are local and contain the user name), plus the content of those files.
-# Exit 4 = refused, nothing sent.
-args=("$@") scan_args=() files=()
+# Refuse to post private infrastructure details. What gets scanned is what GitHub would receive: the
+# arguments, plus the content of every local file gh is told to send. gh reads such a file through
+# --body-file / -F (issue, pr), and through --input and fields whose value starts with @
+# (-F / --field key=@file) with api. Each of these files is copied into a private temporary folder: the
+# copy is scanned and gh is given the copy, so the text checked is exactly the text sent, and the local
+# path (it holds the user name) never leaves the machine. Every other way for gh to read local text is
+# refused: stdin, --recover, --template, --editor, pr create --fill, a short flag that reads a file
+# bundled with other letters (-aF), api placeholders gh fills from local git ({owner}, :repo, {branch}...),
+# and every command but api, issue, pr and label (release assets, gists...).
+# Every argument is checked as a possible flag, `--` included: gh takes `--` as the value of the flag
+# before it (-t -- -F file) and keeps reading flags. A file name taken as a flag's value must not start
+# with `-`, so gh cannot read it as a flag that bot-gh skipped. Exit 4 = refused, nothing sent.
+refuse() { echo "bot-gh: refused: $*" >&2; exit 4; }
+cmd=${1:-} vals=''
+case $cmd in
+    api)   risky=F vals=fHXqtp ;;  # -F (a field, which may be @file); vals: the short flags that take a value
+    issue) risky=FTe ;;            # -F body file, -T template, -e editor
+    pr)    risky=FTef ;;           # the same, and -f (create --fill: commit messages)
+    label) risky='' ;;
+    *) refuse "bot-gh runs only gh api, issue, pr and label (other commands can send local files unchecked)" ;;
+esac
+tmp=$(mktemp -d -t bot-gh.XXXXXX) || refuse "cannot create a temporary folder"
+trap 'rm -rf "$tmp"' EXIT
+pid=''
+stop() {  # stop CODE: on a signal, stop gh too (it could still post), wait for it, exit; the EXIT trap removes the copies
+    if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || :; wait "$pid" || :; fi
+    exit "$1"
+}
+trap 'stop 130' INT; trap 'stop 143' TERM; trap 'stop 129' HUP
+copies=() out=() shown=() n=0 copy='' value='' seen=''
+take() {  # take FILE: copy a file gh would send and set $copy to the copy's path
+    [[ -n $1 && $1 != - ]] || refuse "pass text as a file, not on stdin, so it can be checked"
+    [[ $1 != -* ]] || refuse "a file name must not start with - (gh could read it as a flag): write ./$1"
+    [[ -f $1 && -r $1 ]] || refuse "cannot read a file given to gh (it must be a regular, readable file)"
+    n=$((n + 1)) copy=$tmp/$n
+    cp -- "$1" "$copy" || refuse "cannot copy a file given to gh"
+    copies+=("$copy")
+}
+field() {  # field KEY=VALUE (api -F): gh reads a value starting with @ from a file. Sets $value (for gh), $seen (scanned)
+    [[ $1 != -* ]] || refuse "a field must be key=value, not a flag ($1)"
+    placeholders "$1"
+    value=$1 seen=$1
+    if [[ $1 == *=* && ${1#*=} == @* ]]; then
+        take "${1#*=@}"; value=${1%%=*}=@$copy seen=${1%%=*}=@FILE
+    fi
+}
+placeholders() {  # gh api fills {owner} / :owner, {repo} / :repo and {branch} / :branch from local git after the check.
+    # A plain substring match, whatever follows (:branché too): no regex, so the locale cannot change the answer.
+    # It checks every argument, although gh fills them only in the endpoint and in -F values: harmless forms such as
+    # --jq '{owner}', a -f field, a -H header or a label named area:repository are refused too. That fails closed and
+    # no routine needs them; checking only the endpoint would need the list of api flags that take a value.
+    if [[ $cmd == api && ( $1 == *\{owner\}* || $1 == *\{repo\}* || $1 == *\{branch\}* ||
+                           $1 == *:owner* || $1 == *:repo* || $1 == *:branch* ) ]]; then
+        refuse "write the repository and branch out: gh fills {owner}, {repo}, {branch} (and :owner, :repo, :branch) from local git"
+    fi
+}
+args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
     a=${args[i]}
-    case $a in
-        --body-file|--input)
-            files+=("${args[i + 1]:-}"); scan_args+=("$a"); i=$((i + 1)); continue ;;
-        --body-file=*|--input=*)
-            files+=("${a#*=}"); scan_args+=("${a%%=*}"); continue ;;
-        *=@*)
-            files+=("${a#*=@}"); scan_args+=("${a%%=@*}=@"); continue ;;
+    placeholders "$a"
+    # "$cmd": means "any of the four commands". It is quoted, so it is matched as plain text: a * there could also
+    # match the start of the argument (-F./x:--body-file would match *:--body-file, and its -F would not be checked).
+    case $cmd:$a in
+        "$cmd":--body-file|"$cmd":--body-file=*|api:--input|api:--input=*)
+            if [[ $a == *=* ]]; then take "${a#*=}"; else i=$((i + 1)); take "${args[i]:-}"; fi
+            out+=("${a%%=*}" "$copy"); shown+=("${a%%=*}" FILE); continue ;;
+        api:-F|api:--field|api:-F?*|api:--field=*)
+            if [[ $a == -F || $a == --field ]]; then i=$((i + 1)); field "${args[i]:-}"
+            elif [[ $a == --field=* ]]; then field "${a#*=}"
+            else a=${a#-F}; field "${a#=}"; fi                     # -Fkey=@file or -F=key=@file
+            out+=(-F "$value"); shown+=(-F "$seen"); continue ;;
+        "$cmd":-F|"$cmd":-F?*)                                     # -F file, -Ffile, -F=file (api -F: above)
+            if [[ $a == -F ]]; then i=$((i + 1)); take "${args[i]:-}"; else a=${a#-F}; take "${a#=}"; fi
+            out+=(-F "$copy"); shown+=(-F FILE); continue ;;
+        # --template is also the output format flag of api, list and view (harmless, and -t is let through there): it
+        # is refused for every command all the same, as no routine needs it (use --jq).
+        "$cmd":--recover|"$cmd":--recover=*|"$cmd":--template|"$cmd":--template=*|\
+        "$cmd":--editor|"$cmd":--editor=*|pr:--fill*)
+            refuse "${a%%=*} makes gh post text bot-gh cannot check: use --body-file" ;;
     esac
-    scan_args+=("$a")
-done
-scan_text=$(printf '%s\n' "${scan_args[@]}")
-for f in "${files[@]}"; do
-    if [[ -z $f || $f == - ]]; then
-        echo "bot-gh: refused: pass text as a file, not on stdin, so it can be checked" >&2
-        exit 4
+    # Short flags bundled in one argument (-aF, -iFkey=@file): gh reads letters until one takes a value.
+    # A letter that reads local text must stand alone (-F <file>); -T, -e and pr -f are refused outright.
+    # For issue and pr every letter is read: one letter takes a value in a subcommand and not in another (-a: pr create
+    # --assignee, pr review --approve), so stopping early could let -aF <file> through. The cost: a value that looks
+    # like short flags (-Rorg/repo, a body that starts with "- ") is refused too, and must be written --flag=value.
+    if [[ -n $risky && $a == -[!-]* ]]; then
+        for ((j = 1; j < ${#a}; j++)); do
+            l=${a:j:1}
+            if [[ $l == ["$risky"] ]]; then
+                refuse "-$l reads local text bot-gh cannot check: write -F <file> on its own, or use --body-file." \
+                    "If this argument is a flag's value (a body that starts with -, or -Rorg/repo), write it as" \
+                    "--flag=value (--body='- item', --repo=org/repo)"
+            fi
+            [[ -n $vals && $l == ["$vals"] ]] && break               # the rest of the argument is this flag's value
+        done
     fi
-    if [[ ! -r $f ]]; then
-        echo "bot-gh: refused: cannot read a file given with --body-file, --input or =@" >&2
-        exit 4
-    fi
-    scan_text+=$'\n'$(<"$f")
+    out+=("$a"); shown+=("$a")
 done
-"$(dirname "$0")/scan-private" <<<"$scan_text" || exit $?
+printf '%s\n' ${shown[@]+"${shown[@]}"} > "$tmp/args"
+for f in "$tmp/args" ${copies[@]+"${copies[@]}"}; do    # one by one: a pattern cannot hide across two files
+    "$(dirname "$0")/scan-private" "$f" || exit $?
+done
+# gh can also send a copy's path: a flag that wants a value takes the file flag after it as that value, and the
+# path becomes the next argument (label create -d -F <file>). So the folder's path is checked like the rest.
+printf '%s\n' "$tmp" > "$tmp/path"
+"$(dirname "$0")/scan-private" "$tmp/path" 2>/dev/null ||
+    refuse "the temporary folder's path holds private details, and gh may send it: set TMPDIR to a neutral folder such as /tmp"
 
 if [[ ! -r $conf ]]; then
     echo "bot-gh: not configured ($conf missing)" >&2
@@ -80,4 +157,10 @@ if [[ -z $token || $token == null ]]; then
     exit 1
 fi
 
-GH_TOKEN=$token exec gh "$@"
+# not exec: the temporary copies are removed when gh is done. No prompt and no stdin: on a terminal gh would otherwise
+# ask for a title, a body or a template and post the answer unchecked. In the background, so that a signal reaches
+# stop() at once (bash runs a trap only after a foreground command ends).
+GH_PROMPT_DISABLED=1 GH_TOKEN=$token gh "${out[@]}" </dev/null & pid=$!
+rc=0
+wait "$pid" || rc=$?
+exit "$rc"

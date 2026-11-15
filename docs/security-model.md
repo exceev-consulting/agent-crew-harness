@@ -38,8 +38,12 @@ working copy.
 - Secrets live in `secrets_dir`, permission 600, written by helpers the user runs (`bot-setup`, `notify --setup`). No
   prompt reads them. Tokens never appear on a command line (`ps`), in a log or in a message.
 - `scan-private` refuses any text with your private patterns (hosts, IPs, client names, local paths). `bot-gh` runs it
-  on every post; routines that push run it on their diff. A canary line proves the guard works: a routine that writes
-  code stops when the canary passes.
+  on every post: the arguments and every file gh would send (`--body-file` / `-F`, `--input`, `-F key=@file`). It
+  copies each file first and gives gh the copy, so the text checked is the text sent. The path of the copies' folder is
+  checked too (gh can send it): if your `TMPDIR` holds private details, set it to a neutral folder such as `/tmp`. Any
+  other way for gh to read local text (stdin, `--recover`, `--template`, `--editor`, `--fill`, release assets, commands
+  other than `api`, `issue`, `pr` and `label`) is refused. Routines that push run `scan-private` on their diff. A canary
+  line proves the guard works: a routine that writes code stops when the canary passes.
 - Telegram messages also go through the guard; a message with private details is replaced by a short notice.
 
 ## Security problems found by routines
