@@ -85,6 +85,8 @@ refused "issue create --recover"          issue create --recover "$C"
 refused "issue create --recover="         issue create "--recover=$C"
 refused "issue create -T"                 issue create -t x -T bug_report
 refused "issue create --template"         issue create -t x --template bug_report
+refused "api --template"                  api graphql --template x
+refused "api --template="                 api graphql --template=x
 refused "issue comment -e"                issue comment 1 -e
 refused "issue comment --editor"          issue comment 1 --editor
 refused "pr create --fill"                pr create --fill

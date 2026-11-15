@@ -86,8 +86,7 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             elif [[ $a == --field=* ]]; then field "${a#*=}"
             else a=${a#-F}; field "${a#=}"; fi                     # -Fkey=@file or -F=key=@file
             out+=(-F "$value"); shown+=(-F "$seen"); continue ;;
-        api:*) ;;
-        "$cmd":-F|"$cmd":-F?*)                                     # -F file, -Ffile or -F=file
+        "$cmd":-F|"$cmd":-F?*)                                     # -F file, -Ffile, -F=file (api -F: above)
             if [[ $a == -F ]]; then i=$((i + 1)); take "${args[i]:-}"; else a=${a#-F}; take "${a#=}"; fi
             out+=(-F "$copy"); shown+=(-F FILE); continue ;;
         # --template is also the output format flag of api, list and view (harmless, and -t is let through there): it
