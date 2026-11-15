@@ -63,6 +63,9 @@ field() {  # field KEY=VALUE (api -F): gh reads a value starting with @ from a f
 }
 placeholders() {  # gh api fills {owner} / :owner, {repo} / :repo and {branch} / :branch from local git after the check.
     # A plain substring match, whatever follows (:branché too): no regex, so the locale cannot change the answer.
+    # It checks every argument, although gh fills them only in the endpoint and in -F values: harmless forms such as
+    # --jq '{owner}', a -f field, a -H header or a label named area:repository are refused too. That fails closed and
+    # no routine needs them; checking only the endpoint would need the list of api flags that take a value.
     if [[ $cmd == api && ( $1 == *\{owner\}* || $1 == *\{repo\}* || $1 == *\{branch\}* ||
                            $1 == *:owner* || $1 == *:repo* || $1 == *:branch* ) ]]; then
         refuse "write the repository and branch out: gh fills {owner}, {repo}, {branch} (and :owner, :repo, :branch) from local git"
@@ -85,6 +88,8 @@ for ((i = 0; i < ${#args[@]}; i++)); do
         *:-F|*:-F?*)                                               # -F file, -Ffile or -F=file
             if [[ $a == -F ]]; then i=$((i + 1)); take "${args[i]:-}"; else a=${a#-F}; take "${a#=}"; fi
             out+=(-F "$copy"); shown+=(-F FILE); continue ;;
+        # --template is also the output format flag of api, list and view (harmless, and -t is let through there): it
+        # is refused for every command all the same, as no routine needs it (use --jq).
         *:--recover|*:--recover=*|*:--template|*:--template=*|*:--editor|*:--editor=*|pr:--fill*)
             refuse "${a%%=*} makes gh post text bot-gh cannot check: use --body-file" ;;
     esac
