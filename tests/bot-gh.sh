@@ -53,6 +53,10 @@ passes  "two files are scanned one by one"  api graphql -F "a=@$T/half1.md" -F "
 # two files would hide it (no final newlineDEMO-START), so this passes only when the files are scanned one by one
 printf 'no final newline' > "$T/nonl.md"; printf 'DEMO-START of a line\n' > "$T/start.md"
 refused "a pattern at the start of the next file" api graphql -F "a=@$T/nonl.md" -F "b=@$T/start.md"
+# a file name that ends in :--body-file: "any command" must not match part of the argument, or bot-gh would scan the
+# clean file after it and let gh read this one
+printf 'leak DEMO-CANARY-0000\n' > "$T/x:--body-file"
+refused "-F<file> named x:--body-file"    issue comment 1 "-F$T/x:--body-file" "$C"
 
 # `--` as the value of the flag before it: gh keeps reading flags after it, so the guard does too
 refused "-t -- -F <file>"                 issue create -t -- -F "$P"

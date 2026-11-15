@@ -75,8 +75,10 @@ args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
     a=${args[i]}
     placeholders "$a"
+    # "$cmd": means "any of the four commands". It is quoted, so it is matched as plain text: a * there could also
+    # match the start of the argument (-F./x:--body-file would match *:--body-file, and its -F would not be checked).
     case $cmd:$a in
-        *:--body-file|*:--body-file=*|api:--input|api:--input=*)
+        "$cmd":--body-file|"$cmd":--body-file=*|api:--input|api:--input=*)
             if [[ $a == *=* ]]; then take "${a#*=}"; else i=$((i + 1)); take "${args[i]:-}"; fi
             out+=("${a%%=*}" "$copy"); shown+=("${a%%=*}" FILE); continue ;;
         api:-F|api:--field|api:-F?*|api:--field=*)
@@ -85,12 +87,13 @@ for ((i = 0; i < ${#args[@]}; i++)); do
             else a=${a#-F}; field "${a#=}"; fi                     # -Fkey=@file or -F=key=@file
             out+=(-F "$value"); shown+=(-F "$seen"); continue ;;
         api:*) ;;
-        *:-F|*:-F?*)                                               # -F file, -Ffile or -F=file
+        "$cmd":-F|"$cmd":-F?*)                                     # -F file, -Ffile or -F=file
             if [[ $a == -F ]]; then i=$((i + 1)); take "${args[i]:-}"; else a=${a#-F}; take "${a#=}"; fi
             out+=(-F "$copy"); shown+=(-F FILE); continue ;;
         # --template is also the output format flag of api, list and view (harmless, and -t is let through there): it
         # is refused for every command all the same, as no routine needs it (use --jq).
-        *:--recover|*:--recover=*|*:--template|*:--template=*|*:--editor|*:--editor=*|pr:--fill*)
+        "$cmd":--recover|"$cmd":--recover=*|"$cmd":--template|"$cmd":--template=*|\
+        "$cmd":--editor|"$cmd":--editor=*|pr:--fill*)
             refuse "${a%%=*} makes gh post text bot-gh cannot check: use --body-file" ;;
     esac
     # Short flags bundled in one argument (-aF, -iFkey=@file): gh reads letters until one takes a value.
