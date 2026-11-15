@@ -9,7 +9,7 @@ fail=0
 ok()  { printf 'ok: %s\n' "$1"; }
 bad() { printf 'not ok: %s\n' "$1"; fail=1; }
 
-printf 'DEMO-CANARY-0000\n' > "$T/patterns"
+printf 'DEMO-CANARY-0000\n^DEMO-START\n' > "$T/patterns"
 printf 'leak DEMO-CANARY-0000 here\n' > "$T/private.md"
 printf 'a clean body\n' > "$T/clean.md"
 export HARNESS_CONFIG="$R/tests/fixtures/harness.json"
@@ -49,8 +49,10 @@ refused "private text in an argument"     issue comment 1 --body "see DEMO-CANAR
 refused "private text in an api field"    api repos/demo/repo/issues -f "body=DEMO-CANARY-0000"
 printf 'ends with DEMO-CANARY' > "$T/half1.md"; printf -- '-0000 here\n' > "$T/half2.md"
 passes  "two files are scanned one by one"  api graphql -F "a=@$T/half1.md" -F "b=@$T/half2.md"
-printf 'no final newline' > "$T/nonl.md"
-refused "a pattern at the start of the next file" api graphql -F "a=@$T/nonl.md" -F "b=@$P"
+# an anchored pattern (^DEMO-START) at the start of a file that follows one without a final newline: joined, the
+# two files would hide it (no final newlineDEMO-START), so this passes only when the files are scanned one by one
+printf 'no final newline' > "$T/nonl.md"; printf 'DEMO-START of a line\n' > "$T/start.md"
+refused "a pattern at the start of the next file" api graphql -F "a=@$T/nonl.md" -F "b=@$T/start.md"
 
 # `--` as the value of the flag before it: gh keeps reading flags after it, so the guard does too
 refused "-t -- -F <file>"                 issue create -t -- -F "$P"
@@ -172,9 +174,14 @@ copy=$(cat "$T/gh-path" 2>/dev/null)
 [[ -n $copy && $copy != "$C" ]] && cmp -s "$T/gh-body" "$C" && grep -qx "query=@$copy" "$T/gh-args" \
     && ok "api fields point at a copy with the same text" || bad "api field rewrite"
 grep -qx 'x=@y' "$T/gh-args" && ok "raw fields (-f) are left as typed" || bad "raw field changed"
-live issue create -t x "--body-file=$C"
-copy=$(cat "$T/gh-path" 2>/dev/null)
-[[ -n $copy && $copy != "$C" ]] && cmp -s "$T/gh-body" "$C" && ok "--body-file= also gets the copy" || bad "--body-file= rewrite"
+gets_copy() {  # gets_copy DESC ARGS...: gh is given a copy of $C with the same text, never $C itself
+    live "${@:2}"; copy=$(cat "$T/gh-path" 2>/dev/null)
+    [[ -n $copy && $copy != "$C" ]] && cmp -s "$T/gh-body" "$C" && ok "$1 also gets the copy" || bad "$1 rewrite"
+}
+gets_copy "--body-file="     issue create -t x "--body-file=$C"
+gets_copy "-F=<file>"        issue create -t x "-F=$C"
+gets_copy "api --input"      api graphql --input "$C"
+gets_copy "api -Fkey=@file"  api graphql "-Fquery=@$C"
 
 # a signal to bot-gh also stops gh (it could still be posting), and bot-gh exits with the signal's usual code
 mkdir -p "$T/slow"
