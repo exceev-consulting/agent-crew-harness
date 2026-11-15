@@ -38,7 +38,12 @@ case $cmd in
 esac
 tmp=$(mktemp -d -t bot-gh.XXXXXX) || refuse "cannot create a temporary folder"
 trap 'rm -rf "$tmp"' EXIT
-trap 'exit 130' INT TERM HUP
+pid=''
+stop() {  # stop CODE: on a signal, stop gh too (it could still post), wait for it, exit; the EXIT trap removes the copies
+    if [[ -n $pid ]]; then kill "$pid" 2>/dev/null || :; wait "$pid" || :; fi
+    exit "$1"
+}
+trap 'stop 130' INT; trap 'stop 143' TERM; trap 'stop 129' HUP
 copies=() out=() shown=() n=0 copy='' value='' seen=''
 take() {  # take FILE: copy a file gh would send and set $copy to the copy's path
     [[ -n $1 && $1 != - ]] || refuse "pass text as a file, not on stdin, so it can be checked"
@@ -141,7 +146,9 @@ if [[ -z $token || $token == null ]]; then
 fi
 
 # not exec: the temporary copies are removed when gh is done. No prompt and no stdin: on a terminal gh would otherwise
-# ask for a title, a body or a template and post the answer unchecked.
+# ask for a title, a body or a template and post the answer unchecked. In the background, so that a signal reaches
+# stop() at once (bash runs a trap only after a foreground command ends).
+GH_PROMPT_DISABLED=1 GH_TOKEN=$token gh "${out[@]}" </dev/null & pid=$!
 rc=0
-GH_PROMPT_DISABLED=1 GH_TOKEN=$token gh "${out[@]}" </dev/null || rc=$?
+wait "$pid" || rc=$?
 exit "$rc"

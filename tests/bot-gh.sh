@@ -172,4 +172,16 @@ grep -qx 'x=@y' "$T/gh-args" && ok "raw fields (-f) are left as typed" || bad "r
 live issue create -t x "--body-file=$C"
 copy=$(cat "$T/gh-path" 2>/dev/null)
 [[ -n $copy && $copy != "$C" ]] && cmp -s "$T/gh-body" "$C" && ok "--body-file= also gets the copy" || bad "--body-file= rewrite"
+
+# a signal to bot-gh also stops gh (it could still be posting), and bot-gh exits with the signal's usual code
+mkdir -p "$T/slow"
+printf '#!/bin/sh\necho $$ > "%s/gh-pid"\nexec sleep 10\n' "$T" > "$T/slow/gh"; chmod +x "$T/slow/gh"
+rm -f "$T/gh-pid"
+PATH="$T/slow:$T/bin:$PATH" HARNESS_BOT_CONF="$T/bot.env" "$R/bin/bot-gh" issue comment 1 -F "$C" </dev/null >/dev/null 2>&1 &
+bot=$!
+for _ in $(seq 100); do [[ -s $T/gh-pid ]] && break; sleep 0.1; done
+kill -TERM "$bot"; wait "$bot"; rc=$?
+ghpid=$(cat "$T/gh-pid" 2>/dev/null)
+[[ $rc == 143 && -n $ghpid ]] && ! kill -0 "$ghpid" 2>/dev/null \
+    && ok "a signal to bot-gh stops gh too (exit 143)" || bad "a signal to bot-gh does not stop gh (exit $rc)"
 exit "$fail"
