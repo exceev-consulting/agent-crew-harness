@@ -50,8 +50,10 @@ wins. A routine's own prompt can add restrictions, never remove one of these.
 - Pass text as a file (`--body-file <f>`, or `-F body=@<f>` with `api`), never on stdin. bot-gh refuses every other way
   for gh to read local text (`--recover`, `--template`, `--editor`, `pr create --fill`, release assets, `api`
   placeholders such as `{owner}` or `:branch`: write the values out, other commands than `api`, `issue`, `pr`, `label`).
-- bot-gh exit 4: the text contains private details; remove them and retry once. Exit 3: the app is not set up. Any other
-  failure: never retry with plain `gh`, `git` or another credential. Post nothing and put the exact text in your summary.
+- bot-gh exit 4: read its message. Either the text contains private details (remove them and retry once), or the
+  command used a form bot-gh refuses (change the command as the message says and retry once). Exit 3: the app is not
+  set up. Any other failure: never retry with plain `gh`, `git` or another credential. Post nothing and put the exact
+  text in your summary.
 - Commits use the repository's git config ({{git_author}}) and its signing. Never change git config, never pass
   `--no-gpg-sign`, and add no trailer unless PROFILE.md, "Commits and pull requests", asks for one. One exception: the
   review-fixer routine authors its commits as the app (`--author`), the committer and signature staying as above.
