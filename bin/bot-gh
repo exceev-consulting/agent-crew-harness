@@ -140,7 +140,8 @@ if [[ -z $token || $token == null ]]; then
     exit 1
 fi
 
-# not exec: the temporary copies are removed when gh is done
+# not exec: the temporary copies are removed when gh is done. No prompt and no stdin: on a terminal gh would otherwise
+# ask for a title, a body or a template and post the answer unchecked.
 rc=0
-GH_TOKEN=$token gh "${out[@]}" || rc=$?
+GH_PROMPT_DISABLED=1 GH_TOKEN=$token gh "${out[@]}" </dev/null || rc=$?
 exit "$rc"

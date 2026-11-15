@@ -144,11 +144,14 @@ for a in "\$@"; do
     f=\$a; [[ \$a == *=@* ]] && f=\${a#*=@}
     [[ -f \$f ]] && { cat -- "\$f" > "$T/gh-body"; echo "\$f" > "$T/gh-path"; }
 done
+printf '%s\n' "\${GH_PROMPT_DISABLED:-}" > "$T/gh-prompt"
+cat > "$T/gh-stdin"
 [[ \$GH_TOKEN == demo-token ]] || exit 9
 exit 7
 EOF
 chmod +x "$T/bin/curl" "$T/bin/gh"
-live() { rm -f "$T"/gh-*; PATH="$T/bin:$PATH" HARNESS_BOT_CONF="$T/bot.env" timeout 20 "$R/bin/bot-gh" "$@" </dev/null >/dev/null 2>&1; }
+# live ARGS...: run bot-gh with the fake gh; its stdin is $in (default: empty)
+live() { rm -f "$T"/gh-*; PATH="$T/bin:$PATH" HARNESS_BOT_CONF="$T/bot.env" timeout 20 "$R/bin/bot-gh" "$@" <"${in:-/dev/null}" >/dev/null 2>&1; }
 live issue comment 1 -F "$C"; rc=$?
 [[ $rc == 7 ]] && ok "gh's exit code is passed on, with the app token" || bad "gh exit code ($rc)"
 cmp -s "$T/gh-body" "$C" && ok "gh posts the same text that was scanned" || bad "posted text differs"
@@ -156,6 +159,10 @@ copy=$(cat "$T/gh-path" 2>/dev/null)
 [[ -n $copy && $copy != "$C" ]] && ok "gh gets the copy, not the original path" || bad "gh got the original path"
 [[ ! -e $copy ]] && ok "the copy is removed after gh" || bad "copy left behind"
 grep -qx -- "-F" "$T/gh-args" && grep -qx 1 "$T/gh-args" && ok "the other arguments reach gh unchanged" || bad "arguments"
+printf 'typed text\n' > "$T/typed.txt"
+in=$T/typed.txt live issue comment 1 -F "$C"
+[[ $(cat "$T/gh-prompt" 2>/dev/null) == 1 && -e $T/gh-stdin && ! -s $T/gh-stdin ]] \
+    && ok "gh runs without prompts and without the caller's stdin" || bad "gh can prompt or read stdin"
 
 live api graphql -F "query=@$C" -f x=@y
 copy=$(cat "$T/gh-path" 2>/dev/null)
